@@ -1,0 +1,7 @@
+.DS_Store
+*.log
+*.pyc
+__pycache__/
+.venv/
+.env.local
+.openclaw.env

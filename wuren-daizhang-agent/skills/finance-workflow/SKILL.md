@@ -171,6 +171,47 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 query_cst_data.py \
   --input-mode fetch
 ```
 
+如果用户明确要“流水 vs 发票比对”并生成确认单材料，优先走这条标准链路：
+
+```bash
+cd /Users/kaixuanchuangzhi/.openclaw/workspace/finance.git.com && \
+CST_BASE_URL="https://cstuat.uf-tree.com" python3 query_v2_simplified.py \
+  --start-date "2026-05-01" \
+  --end-date "2026-05-31" \
+  --auto-login \
+  --username "手机号" \
+  --password "密码" \
+  --company-name "集团名称" \
+  --output "query_result_2026_05.json"
+```
+
+```bash
+cd /Users/kaixuanchuangzhi/.openclaw/workspace/finance.git.com && \
+python3 generate_comparison_report.py \
+  --query-result "query_result_2026_05.json" \
+  --output "comparison_report.json"
+```
+
+```bash
+cd /Users/kaixuanchuangzhi/.openclaw/workspace/finance.git.com && \
+python3 generate_reconciliation_slip.py \
+  --comparison "comparison_report.json" \
+  --query-result "query_result_2026_05.json" \
+  --output-slip "reconciliation_slip.json"
+```
+
+如果用户进一步要求处理“确认单管理”，只能按真实确认单页能力继续探测或提交已有记录：
+
+```bash
+cd /Users/kaixuanchuangzhi/.openclaw/workspace/finance.git.com && \
+CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.py \
+  --slip "reconciliation_slip.json" \
+  --auto-login \
+  --username "手机号" \
+  --password "密码" \
+  --company-name "集团名称"
+```
+
 ## Auto-Login Rules
 
 - `finance.git.com` 支持未登录财税通情况下自动登录
@@ -197,9 +238,15 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 query_cst_data.py \
 - `进项发票`
 - `销项发票`
 - “查询 2026.5.1-2026.5.31 的借贷流水并与发票比对”
+- “对比结果生成确认单”
+- “写入单据管理 / 确认单管理”
 
 优先使用仓库脚本：
 - `/Users/kaixuanchuangzhi/.openclaw/workspace/finance.git.com/query_cst_data.py`
+- `/Users/kaixuanchuangzhi/.openclaw/workspace/finance.git.com/query_v2_simplified.py`
+- `/Users/kaixuanchuangzhi/.openclaw/workspace/finance.git.com/generate_comparison_report.py`
+- `/Users/kaixuanchuangzhi/.openclaw/workspace/finance.git.com/generate_reconciliation_slip.py`
+- `/Users/kaixuanchuangzhi/.openclaw/workspace/finance.git.com/submit_reconciliation_to_cst.py`
 
 不要再使用旧的猜测型接口或旧字段名，例如：
 - `startDate`
@@ -244,6 +291,9 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 query_cst_data.py \
 - 如果用户明确只要“发票获取”口径的进项票，使用 `--input-mode fetch`
 - 如果用户明确只要“费用发票查询”口径的进项票，使用 `--input-mode fee`
 - 若用户要做“流水 vs 发票”比对，先把三类原始数据拉下来，再单独说明当前比对口径使用的是哪套进项数据
+- 若用户要做“流水 vs 发票比对 + 生成确认单材料”，优先用 `query_v2_simplified.py`
+  - 该脚本会输出统一 `records` 结构，方便后续 `generate_comparison_report.py` 与 `generate_reconciliation_slip.py` 直接消费
+  - 旧版 `query_v2_simplified.py` 曾因读错财税通返回结构，把银行与进项误报成 `0`；后续不要再复用旧结果文件
 
 ### 当前 UAT 观察
 
@@ -255,6 +305,14 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 query_cst_data.py \
 - 因此，如果再次遇到销项发票的 `缺少请求体`，优先判断为“日期筛选链路异常”，不要误答成“账号没有销项权限”
 - 如果用户只是要确认某个期间是否存在销项发票，可先拉无筛选全量销项列表，再按 `invoiceMakeDate` 本地过滤；若过滤结果为 0，直接汇报“该时间段无销项发票”
 - 对 `queryInputInvoicePage` 和销项发票的同类 `缺少请求体` 报错，优先判断为当前 UAT 或后端链路问题，不要重新退回去猜旧字段名
+- 已在 `2026-05-28` 继续确认：
+  - `确认单管理` 真实页面路由是 `/bill/query/confirmBill`
+  - 页面真实列表接口是 `POST /api/bill/order-confirmation/queryOrderConfirmPage`
+  - 页面真实更新接口是 `POST /api/bill/order-confirmation/update`
+  - 页面真实“提交已有确认单”接口是 `POST /api/bill/order-confirmation/submitExpenses`
+  - 当前页面未发现通用“新增总结确认单”的入口，不要再把它误判成可直接上传任意对账总结的页面
+  - 如果当前期间三类数据都为 `0`，应直接回报“当前期间无银企流水和发票数据，无需写入确认单管理”
+  - 如果当前期间存在交易或发票，但用户要求“写入确认单管理”，应先说明：现有页面能力偏向**更新 / 提交已有交易级确认单**，不是新建任意总结单
 
 ## Login Verification Rule
 

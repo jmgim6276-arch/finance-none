@@ -43,6 +43,7 @@
   - 进项发票-发票获取：`/invoice/input-invoice` -> `/api/invoice/inputinvoice/queryInputInvoicePage` -> `bizDateStart` / `bizDateEnd`
   - 销项发票：`/invoice/output-invoice` -> `/api/invoice/salesInvoice/queryInvoiceDetailPage` -> `invoiceMakeDateStart` / `invoiceMakeDateEnd`
 - `finance.git.com/query_cst_data.py` 已改成使用上述真实接口；如果用户提到“读取交易查询里的银企直连明细查询并与进项/销项发票比对”，优先跑该脚本，而不是继续试旧接口。
+- `finance.git.com/query_v2_simplified.py` 是对账链路专用查询脚本：输出统一 `records` 结构，供 `generate_comparison_report.py` 与 `generate_reconciliation_slip.py` 直接消费。`2026-05-28` 已修复旧版把银行与进项误报为 `0` 的结构解析问题。
 - 同日 UAT 实测结果：
   - 银企直连与进项“发票查询”可正常返回数据
   - 销项发票无日期筛选时可正常返回列表，说明账号本身具备销项访问能力
@@ -50,3 +51,13 @@
   - 尤其是销项发票：若带 `invoiceMakeDateStart` / `invoiceMakeDateEnd` / `invoiceMakeDate` 后报 `缺少请求体`，应优先判断为 UAT 日期筛选链路问题，而不是权限不足
   - 如果只是确认某个期间有没有销项票，可先读取无筛选全量销项列表，再按 `invoiceMakeDate` 本地过滤；`2026-05-01` 至 `2026-05-31` 实测结果为 `0` 条，应直接汇报“该时间段无销项发票”
   - 后续若再次出现这两个接口的同类报错，应优先视为当前 UAT/后端问题，而不是再次怀疑字段名猜错
+- 已于 `2026-05-28` 确认“确认单管理”真实能力：
+  - 页面路由：`/bill/query/confirmBill`
+  - 列表接口：`POST /api/bill/order-confirmation/queryOrderConfirmPage`
+  - 更新接口：`POST /api/bill/order-confirmation/update`
+  - 提交已有确认单接口：`POST /api/bill/order-confirmation/submitExpenses`
+  - 明细接口：`POST /api/bill/order-confirmation/detail`
+  - 当前页面未发现通用“新增总结确认单”入口，不要再把它当成可上传任意对账总结的页面
+  - 如果用户要求“对比结果生成确认单写入确认单管理”，应先判断当前期间是否存在可落库的交易级确认单数据
+  - 若当前期间三类数据都为 `0`，直接回报“当前期间无银企流水和发票数据，无需写入确认单管理”
+  - 若存在交易 / 发票，但没有对应已有确认单记录或没有明确 `confirm id`，不要假装已写入；应明确告诉用户当前页面更像“更新 / 提交已有确认单”，不是从零新建总结单

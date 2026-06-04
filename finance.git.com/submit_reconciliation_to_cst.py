@@ -43,6 +43,25 @@ DEFAULT_INPUT_VAT_SUBJECT = {
     "subjectFullName": "应交税费_应交增值税",
     "subjectCode": "222101",
 }
+DEFAULT_OUTPUT_VAT_SUBJECT = dict(DEFAULT_INPUT_VAT_SUBJECT)
+DEFAULT_PAYABLE_SUBJECT = {
+    "subjectId": 80434,
+    "subjectName": "应付账款",
+    "subjectFullName": "应付账款",
+    "subjectCode": "2202",
+}
+DEFAULT_RECEIVABLE_SUBJECT = {
+    "subjectId": 80400,
+    "subjectName": "应收账款",
+    "subjectFullName": "应收账款",
+    "subjectCode": "1122",
+}
+DEFAULT_REVENUE_SUBJECT = {
+    "subjectId": 80559,
+    "subjectName": "主营业务收入_服务收入",
+    "subjectFullName": "主营业务收入_服务收入",
+    "subjectCode": "500101",
+}
 SUBJECT_TREE_CACHE: Dict[str, List[Dict[str, Any]]] = {}
 
 
@@ -143,6 +162,16 @@ def build_confirm_voucher_diest(bank_txn: Dict[str, Any]) -> Optional[str]:
     return summary or purpose
 
 
+def build_voucher_diest_from_invoice(invoice: Dict[str, Any]) -> Optional[str]:
+    return first_text(
+        invoice.get("invoiceDesc"),
+        invoice.get("remark"),
+        invoice.get("sellerName"),
+        invoice.get("buyerName"),
+        invoice.get("invoiceNumber"),
+    )
+
+
 def build_create_payload_from_pair(
     pair: Dict[str, Any],
     *,
@@ -151,8 +180,9 @@ def build_create_payload_from_pair(
 ) -> Dict[str, Any]:
     bank_txn = pair.get("bank_txn") or {}
     invoice = pair.get("invoice") or {}
+    confirm_order_type = int(pair.get("confirmOrderType") or 1001)
     payload: Dict[str, Any] = {
-        "confirmOrderType": 1001,
+        "confirmOrderType": confirm_order_type,
         "transNo": first_text(bank_txn.get("orderNo")),
         "detailNo": first_text(bank_txn.get("detailNo")),
         "invoiceNumber": first_text(invoice.get("invoiceNumber")),
@@ -205,6 +235,14 @@ def extract_unmatched_bank_entries(slip: Dict[str, Any]) -> List[Dict[str, Any]]
     return list((((slip or {}).get("details") or {}).get("unmatchedBankTransactions") or []))
 
 
+def extract_accounts_payable_candidates(slip: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return list((((slip or {}).get("details") or {}).get("accountsPayableCandidates") or []))
+
+
+def extract_accounts_receivable_candidates(slip: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return list((((slip or {}).get("details") or {}).get("accountsReceivableCandidates") or []))
+
+
 def contains_text(value: Any, needle: str) -> bool:
     return needle in str(value or "")
 
@@ -241,6 +279,29 @@ def build_create_payload_from_unmatched_bank(item: Dict[str, Any], *, confirm_st
     voucher_diest = build_voucher_diest(bank_txn)
     if voucher_diest:
         payload["voucherDiest"] = voucher_diest
+    if reason:
+        payload["remark"] = reason
+    return payload
+
+
+def build_create_payload_from_invoice_candidate(candidate: Dict[str, Any], *, confirm_status: int) -> Dict[str, Any]:
+    invoice = candidate.get("invoice") or {}
+    confirm_order_type = int(candidate.get("confirmOrderType") or 1004)
+    payload: Dict[str, Any] = {
+        "confirmOrderType": confirm_order_type,
+        "invoiceNumber": first_text(invoice.get("invoiceNumber")),
+        "confirmStatus": int(confirm_status),
+    }
+    voucher_diest = build_voucher_diest_from_invoice(invoice)
+    if voucher_diest:
+        payload["voucherDiest"] = voucher_diest
+    project_id = invoice.get("projectId")
+    project_name = first_text(invoice.get("projectName"))
+    if project_id not in (None, ""):
+        payload["projectId"] = project_id
+    if project_name:
+        payload["projectName"] = project_name
+    reason = str(candidate.get("reason") or "").strip()
     if reason:
         payload["remark"] = reason
     return payload
@@ -466,11 +527,119 @@ def infer_input_vat_subject(
     return dict(DEFAULT_INPUT_VAT_SUBJECT)
 
 
+def infer_subject_from_tree(
+    base_url: str,
+    token: str,
+    company_id: int,
+    merchant_no: Optional[str],
+    *,
+    code_prefixes: List[str],
+    exact_names: Optional[List[str]] = None,
+    full_name_contains: Optional[List[str]] = None,
+    fallback: Dict[str, Any],
+) -> Dict[str, Any]:
+    exact_names = exact_names or []
+    full_name_contains = full_name_contains or []
+    tree = query_accounting_subject_tree(base_url, token, merchant_no, company_id)
+    for subject in tree:
+        subject_code = str(subject.get("subjectCode") or "")
+        full_name = str(subject.get("subjectFullName") or "")
+        name = str(subject.get("subjectName") or "")
+        if any(subject_code.startswith(prefix) for prefix in code_prefixes):
+            return {
+                "subjectId": subject.get("id"),
+                "subjectName": full_name or name,
+                "subjectCode": subject_code,
+            }
+        if full_name in exact_names or name in exact_names:
+            return {
+                "subjectId": subject.get("id"),
+                "subjectName": full_name or name,
+                "subjectCode": subject_code,
+            }
+        if any(needle in full_name or needle in name for needle in full_name_contains):
+            return {
+                "subjectId": subject.get("id"),
+                "subjectName": full_name or name,
+                "subjectCode": subject_code,
+            }
+    return dict(fallback)
+
+
+def infer_output_vat_subject(
+    base_url: str,
+    token: str,
+    company_id: int,
+    merchant_no: Optional[str],
+) -> Dict[str, Any]:
+    return infer_subject_from_tree(
+        base_url,
+        token,
+        company_id,
+        merchant_no,
+        code_prefixes=["222101"],
+        full_name_contains=["销项税额", "应交增值税"],
+        fallback=DEFAULT_OUTPUT_VAT_SUBJECT,
+    )
+
+
+def infer_payable_subject(
+    base_url: str,
+    token: str,
+    company_id: int,
+    merchant_no: Optional[str],
+) -> Dict[str, Any]:
+    return infer_subject_from_tree(
+        base_url,
+        token,
+        company_id,
+        merchant_no,
+        code_prefixes=["2202"],
+        exact_names=["应付账款"],
+        fallback=DEFAULT_PAYABLE_SUBJECT,
+    )
+
+
+def infer_receivable_subject(
+    base_url: str,
+    token: str,
+    company_id: int,
+    merchant_no: Optional[str],
+) -> Dict[str, Any]:
+    return infer_subject_from_tree(
+        base_url,
+        token,
+        company_id,
+        merchant_no,
+        code_prefixes=["1122"],
+        exact_names=["应收账款"],
+        fallback=DEFAULT_RECEIVABLE_SUBJECT,
+    )
+
+
+def infer_revenue_subject(
+    base_url: str,
+    token: str,
+    company_id: int,
+    merchant_no: Optional[str],
+) -> Dict[str, Any]:
+    return infer_subject_from_tree(
+        base_url,
+        token,
+        company_id,
+        merchant_no,
+        code_prefixes=["500101", "5001"],
+        full_name_contains=["主营业务收入_服务收入", "主营业务收入"],
+        fallback=DEFAULT_REVENUE_SUBJECT,
+    )
+
+
 def build_account_subjects(
     base_url: str,
     token: str,
     company_id: int,
     *,
+    confirm_order_type: int,
     bank_txn: Dict[str, Any],
     invoice: Optional[Dict[str, Any]] = None,
     pay_account_no: Optional[str] = None,
@@ -482,77 +651,255 @@ def build_account_subjects(
         bank_txn.get("paymentNo"),
         bank_txn.get("bankAccountNo"),
     )
-    bank_subject = infer_bank_subject(
-        base_url,
-        token,
-        company_id,
-        pay_account_no,
-        merchant_no=merchant_no,
-    )
-    expense_subject = infer_expense_subject(bank_txn, invoice)
+    bank_subject = None
+    expense_subject = infer_expense_subject(bank_txn, invoice) if confirm_order_type in (1001, 1002, 1004) else None
     total_amount = money(
         (invoice or {}).get("invoiceTotalPrice")
         or (invoice or {}).get("totalPrice")
+        or (invoice or {}).get("invoiceMakeTotalAmount")
+        or (invoice or {}).get("invoiceMoney")
         or bank_txn.get("amount")
     )
     tax_amount = money(
         (invoice or {}).get("invoiceTax")
         or (invoice or {}).get("taxPrice")
+        or (invoice or {}).get("taxAmount")
         or (invoice or {}).get("tax")
         or 0
     )
     if tax_amount <= 0 or tax_amount >= total_amount:
         tax_amount = 0.0
     amount_without_tax = money(total_amount - tax_amount)
-    voucher_diest = build_confirm_voucher_diest(bank_txn)
+    voucher_diest = build_confirm_voucher_diest(bank_txn) or build_voucher_diest_from_invoice(invoice or {})
 
-    if not bank_subject or not expense_subject or not total_amount:
+    input_vat_subject = None
+    output_vat_subject = None
+    payable_subject = None
+    receivable_subject = None
+    revenue_subject = None
+    account_subjects: List[Dict[str, Any]] = []
+
+    if not total_amount:
         return {
             "ok": False,
-            "reason": "无法推断科目分录所需的银行科目、费用科目或金额",
-            "bank_subject": bank_subject,
-            "expense_subject": expense_subject,
+            "reason": "无法推断确认单金额",
             "total_amount": total_amount,
             "tax_amount": tax_amount,
+            "confirm_order_type": confirm_order_type,
         }
 
-    account_subjects = [
-        {
-            "direction": DEBIT_DIRECTION,
-            "subjectId": expense_subject.get("subjectId"),
-            "amount": amount_without_tax if tax_amount > 0 else total_amount,
-        }
-    ]
-    input_vat_subject = None
-    if tax_amount > 0:
-        input_vat_subject = infer_input_vat_subject(
+    if confirm_order_type in (1001, 1002):
+        bank_subject = infer_bank_subject(
+            base_url,
+            token,
+            company_id,
+            pay_account_no,
+            merchant_no=merchant_no,
+        )
+        if not bank_subject or not expense_subject:
+            return {
+                "ok": False,
+                "reason": "无法推断支出确认单所需的银行科目或费用科目",
+                "bank_subject": bank_subject,
+                "expense_subject": expense_subject,
+                "total_amount": total_amount,
+                "tax_amount": tax_amount,
+                "confirm_order_type": confirm_order_type,
+            }
+        account_subjects.append(
+            {
+                "direction": DEBIT_DIRECTION,
+                "subjectId": expense_subject.get("subjectId"),
+                "amount": amount_without_tax if tax_amount > 0 else total_amount,
+            }
+        )
+        if tax_amount > 0:
+            input_vat_subject = infer_input_vat_subject(
+                base_url,
+                token,
+                company_id,
+                merchant_no,
+            )
+            account_subjects.append(
+                {
+                    "direction": DEBIT_DIRECTION,
+                    "subjectId": input_vat_subject.get("subjectId"),
+                    "amount": tax_amount,
+                }
+            )
+        account_subjects.append(
+            {
+                "direction": CREDIT_DIRECTION,
+                "subjectId": bank_subject.get("subjectId"),
+                "amount": total_amount,
+            }
+        )
+    elif confirm_order_type == 1004:
+        payable_subject = infer_payable_subject(
             base_url,
             token,
             company_id,
             merchant_no,
         )
+        if not payable_subject or not expense_subject:
+            return {
+                "ok": False,
+                "reason": "无法推断应付账款确认单所需的应付科目或费用科目",
+                "payable_subject": payable_subject,
+                "expense_subject": expense_subject,
+                "total_amount": total_amount,
+                "tax_amount": tax_amount,
+                "confirm_order_type": confirm_order_type,
+            }
         account_subjects.append(
             {
                 "direction": DEBIT_DIRECTION,
-                "subjectId": input_vat_subject.get("subjectId"),
-                "amount": tax_amount,
+                "subjectId": expense_subject.get("subjectId"),
+                "amount": amount_without_tax if tax_amount > 0 else total_amount,
             }
         )
-
-    account_subjects.append(
-        {
-            "direction": CREDIT_DIRECTION,
-            "subjectId": bank_subject.get("subjectId"),
-            "amount": total_amount,
+        if tax_amount > 0:
+            input_vat_subject = infer_input_vat_subject(
+                base_url,
+                token,
+                company_id,
+                merchant_no,
+            )
+            account_subjects.append(
+                {
+                    "direction": DEBIT_DIRECTION,
+                    "subjectId": input_vat_subject.get("subjectId"),
+                    "amount": tax_amount,
+                }
+            )
+        account_subjects.append(
+            {
+                "direction": CREDIT_DIRECTION,
+                "subjectId": payable_subject.get("subjectId"),
+                "amount": total_amount,
+            }
+        )
+    elif confirm_order_type == 2001:
+        bank_subject = infer_bank_subject(
+            base_url,
+            token,
+            company_id,
+            pay_account_no,
+            merchant_no=merchant_no,
+        )
+        revenue_subject = infer_revenue_subject(
+            base_url,
+            token,
+            company_id,
+            merchant_no,
+        )
+        if not bank_subject or not revenue_subject:
+            return {
+                "ok": False,
+                "reason": "无法推断收款发票确认单所需的银行科目或收入科目",
+                "bank_subject": bank_subject,
+                "revenue_subject": revenue_subject,
+                "total_amount": total_amount,
+                "tax_amount": tax_amount,
+                "confirm_order_type": confirm_order_type,
+            }
+        account_subjects.append(
+            {
+                "direction": DEBIT_DIRECTION,
+                "subjectId": bank_subject.get("subjectId"),
+                "amount": total_amount,
+            }
+        )
+        account_subjects.append(
+            {
+                "direction": CREDIT_DIRECTION,
+                "subjectId": revenue_subject.get("subjectId"),
+                "amount": amount_without_tax if tax_amount > 0 else total_amount,
+            }
+        )
+        if tax_amount > 0:
+            output_vat_subject = infer_output_vat_subject(
+                base_url,
+                token,
+                company_id,
+                merchant_no,
+            )
+            account_subjects.append(
+                {
+                    "direction": CREDIT_DIRECTION,
+                    "subjectId": output_vat_subject.get("subjectId"),
+                    "amount": tax_amount,
+                }
+            )
+    elif confirm_order_type == 2003:
+        receivable_subject = infer_receivable_subject(
+            base_url,
+            token,
+            company_id,
+            merchant_no,
+        )
+        revenue_subject = infer_revenue_subject(
+            base_url,
+            token,
+            company_id,
+            merchant_no,
+        )
+        if not receivable_subject or not revenue_subject:
+            return {
+                "ok": False,
+                "reason": "无法推断应收账款确认单所需的应收科目或收入科目",
+                "receivable_subject": receivable_subject,
+                "revenue_subject": revenue_subject,
+                "total_amount": total_amount,
+                "tax_amount": tax_amount,
+                "confirm_order_type": confirm_order_type,
+            }
+        account_subjects.append(
+            {
+                "direction": DEBIT_DIRECTION,
+                "subjectId": receivable_subject.get("subjectId"),
+                "amount": total_amount,
+            }
+        )
+        account_subjects.append(
+            {
+                "direction": CREDIT_DIRECTION,
+                "subjectId": revenue_subject.get("subjectId"),
+                "amount": amount_without_tax if tax_amount > 0 else total_amount,
+            }
+        )
+        if tax_amount > 0:
+            output_vat_subject = infer_output_vat_subject(
+                base_url,
+                token,
+                company_id,
+                merchant_no,
+            )
+            account_subjects.append(
+                {
+                    "direction": CREDIT_DIRECTION,
+                    "subjectId": output_vat_subject.get("subjectId"),
+                    "amount": tax_amount,
+                }
+            )
+    else:
+        return {
+            "ok": False,
+            "reason": f"暂未实现 confirmOrderType={confirm_order_type} 的分录推断",
+            "confirm_order_type": confirm_order_type,
         }
-    )
 
     return {
         "ok": True,
+        "confirm_order_type": confirm_order_type,
         "voucher_diest": voucher_diest,
         "bank_subject": bank_subject,
         "expense_subject": expense_subject,
+        "payable_subject": payable_subject,
+        "receivable_subject": receivable_subject,
+        "revenue_subject": revenue_subject,
         "input_vat_subject": input_vat_subject,
+        "output_vat_subject": output_vat_subject,
         "total_amount": total_amount,
         "tax_amount": tax_amount,
         "amount_without_tax": amount_without_tax if tax_amount > 0 else total_amount,
@@ -566,6 +913,7 @@ def enrich_confirm_with_subjects(
     company_id: int,
     *,
     confirm_id: int,
+    confirm_order_type: int,
     bank_txn: Dict[str, Any],
     invoice: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -582,6 +930,7 @@ def enrich_confirm_with_subjects(
         base_url,
         token,
         company_id,
+        confirm_order_type=confirm_order_type,
         bank_txn=bank_txn,
         invoice=invoice,
         pay_account_no=detail.get("payAccountNo"),
@@ -595,12 +944,21 @@ def enrich_confirm_with_subjects(
         }
 
     payload = dict(detail)
+    primary_subject = (
+        subject_bundle.get("bank_subject")
+        or subject_bundle.get("payable_subject")
+        or subject_bundle.get("receivable_subject")
+    ) or {}
+    debit_subject = (
+        subject_bundle.get("expense_subject")
+        or subject_bundle.get("revenue_subject")
+    ) or {}
     payload.update(
         {
-            "subjectId": (subject_bundle.get("bank_subject") or {}).get("subjectId"),
-            "subjectName": (subject_bundle.get("bank_subject") or {}).get("subjectName"),
-            "debitSubjectId": (subject_bundle.get("expense_subject") or {}).get("subjectId"),
-            "debitSubjectName": (subject_bundle.get("expense_subject") or {}).get("subjectName"),
+            "subjectId": primary_subject.get("subjectId"),
+            "subjectName": primary_subject.get("subjectName"),
+            "debitSubjectId": debit_subject.get("subjectId"),
+            "debitSubjectName": debit_subject.get("subjectName"),
             "voucherDiest": subject_bundle.get("voucher_diest"),
             "accountSubjects": subject_bundle.get("account_subjects"),
         }
@@ -612,7 +970,11 @@ def enrich_confirm_with_subjects(
     update_result = post_json(base_url, REAL_ENDPOINTS["update"], token, payload)
     update_result["bank_subject"] = subject_bundle.get("bank_subject")
     update_result["expense_subject"] = subject_bundle.get("expense_subject")
+    update_result["payable_subject"] = subject_bundle.get("payable_subject")
+    update_result["receivable_subject"] = subject_bundle.get("receivable_subject")
+    update_result["revenue_subject"] = subject_bundle.get("revenue_subject")
     update_result["input_vat_subject"] = subject_bundle.get("input_vat_subject")
+    update_result["output_vat_subject"] = subject_bundle.get("output_vat_subject")
     update_result["amount_without_tax"] = subject_bundle.get("amount_without_tax")
     update_result["tax_amount"] = subject_bundle.get("tax_amount")
     return update_result
@@ -679,6 +1041,16 @@ def main() -> None:
         help="按确认单 submit 接口，把 slip.details.unmatchedBankTransactions 里的候选写入异常池",
     )
     parser.add_argument(
+        "--create-payables",
+        action="store_true",
+        help="按确认单 submit 接口，把 slip.details.accountsPayableCandidates 里的候选新增为应付账款确认单",
+    )
+    parser.add_argument(
+        "--create-receivables",
+        action="store_true",
+        help="按确认单 submit 接口，把 slip.details.accountsReceivableCandidates 里的候选新增为应收账款确认单",
+    )
+    parser.add_argument(
         "--confirm-status",
         type=int,
         default=1,
@@ -736,10 +1108,12 @@ def main() -> None:
         matched_pairs = extract_matched_pairs(slip)
         creation_items = []
         for pair in matched_pairs:
+            confirm_order_type = int(pair.get("confirmOrderType") or 1001)
             subject_bundle = build_account_subjects(
                 base_url,
                 token,
                 company_id,
+                confirm_order_type=confirm_order_type,
                 bank_txn=pair.get("bank_txn") or {},
                 invoice=pair.get("invoice") or {},
                 merchant_no=(pair.get("bank_txn") or {}).get("merchantNo"),
@@ -838,6 +1212,7 @@ def main() -> None:
                         token,
                         company_id,
                         confirm_id=int(created_rows[0].get("id")),
+                        confirm_order_type=int(payload.get("confirmOrderType") or 1001),
                         bank_txn=pair.get("bank_txn") or {},
                         invoice=pair.get("invoice") or {},
                     )
@@ -852,6 +1227,212 @@ def main() -> None:
             result["message"] = f"已新增 {success_count} 条确认单"
         else:
             result["message"] = "没有新增确认单；请查看 create_results 中的跳过或失败原因。"
+    elif args.create_payables:
+        payable_candidates = extract_accounts_payable_candidates(slip)
+        creation_items = []
+        for candidate in payable_candidates:
+            invoice = candidate.get("invoice") or {}
+            subject_bundle = build_account_subjects(
+                base_url,
+                token,
+                company_id,
+                confirm_order_type=int(candidate.get("confirmOrderType") or 1004),
+                bank_txn={},
+                invoice=invoice,
+                merchant_no=invoice.get("merchantNo"),
+            )
+            creation_items.append(
+                {
+                    "candidate": candidate,
+                    "subject_bundle": subject_bundle,
+                    "payload": build_create_payload_from_invoice_candidate(
+                        candidate,
+                        confirm_status=args.confirm_status,
+                    ),
+                }
+            )
+        if args.max_create > 0:
+            creation_items = creation_items[: args.max_create]
+
+        result["action"] = "create_payables"
+        result["planned_create_count"] = len(creation_items)
+        result["create_results"] = []
+
+        success_count = 0
+        skipped_count = 0
+        for item in creation_items:
+            candidate = item.get("candidate") or {}
+            payload = item.get("payload") or {}
+            invoice_number = payload.get("invoiceNumber")
+            if not invoice_number:
+                result["create_results"].append(
+                    {
+                        "ok": False,
+                        "skipped": True,
+                        "reason": "payload 缺少 invoiceNumber",
+                        "payload": payload,
+                    }
+                )
+                skipped_count += 1
+                continue
+
+            existing = query_confirm_bill_page(
+                base_url,
+                token,
+                company_id,
+                invoice_number=invoice_number,
+                confirm_order_type=int(payload.get("confirmOrderType") or 1004),
+                page_size=20,
+            )
+            existing_rows = (((existing.get("response") or {}).get("result") or {}).get("data") or [])
+            if existing.get("ok") and existing_rows:
+                result["create_results"].append(
+                    {
+                        "ok": False,
+                        "skipped": True,
+                        "reason": "系统中已存在相同 invoiceNumber 的确认单记录",
+                        "payload": payload,
+                        "existing_rows": existing_rows,
+                    }
+                )
+                skipped_count += 1
+                continue
+
+            create_result = submit_new_confirm(
+                base_url,
+                token,
+                payload,
+                company_id=company_id,
+            )
+            if create_result.get("ok"):
+                created_rows = (((query_confirm_bill_page(
+                    base_url,
+                    token,
+                    company_id,
+                    invoice_number=invoice_number,
+                    confirm_order_type=int(payload.get("confirmOrderType") or 1004),
+                    page_size=20,
+                ).get("response") or {}).get("result") or {}).get("data") or [])
+                if created_rows:
+                    created_rows.sort(key=lambda row: row.get("createdTime") or "", reverse=True)
+                    create_result["created_rows"] = created_rows
+                    create_result["post_update_result"] = enrich_confirm_with_subjects(
+                        base_url,
+                        token,
+                        company_id,
+                        confirm_id=int(created_rows[0].get("id")),
+                        confirm_order_type=int(payload.get("confirmOrderType") or 1004),
+                        bank_txn={},
+                        invoice=candidate.get("invoice") or {},
+                    )
+            result["create_results"].append(create_result)
+            if create_result.get("ok"):
+                success_count += 1
+
+        result["success"] = success_count > 0
+        result["created_count"] = success_count
+        result["skipped_count"] = skipped_count
+        if success_count:
+            result["message"] = f"已新增 {success_count} 条应付账款确认单"
+        else:
+            result["message"] = "没有新增应付账款确认单；请查看 create_results 中的跳过或失败原因。"
+    elif args.create_receivables:
+        receivable_candidates = extract_accounts_receivable_candidates(slip)
+        creation_items = [
+            {
+                "candidate": candidate,
+                "payload": build_create_payload_from_invoice_candidate(
+                    candidate,
+                    confirm_status=args.confirm_status,
+                ),
+            }
+            for candidate in receivable_candidates
+        ]
+        if args.max_create > 0:
+            creation_items = creation_items[: args.max_create]
+
+        result["action"] = "create_receivables"
+        result["planned_create_count"] = len(creation_items)
+        result["create_results"] = []
+
+        success_count = 0
+        skipped_count = 0
+        for item in creation_items:
+            candidate = item.get("candidate") or {}
+            payload = item.get("payload") or {}
+            invoice_number = payload.get("invoiceNumber")
+            if not invoice_number:
+                result["create_results"].append(
+                    {
+                        "ok": False,
+                        "skipped": True,
+                        "reason": "payload 缺少 invoiceNumber",
+                        "payload": payload,
+                    }
+                )
+                skipped_count += 1
+                continue
+
+            existing = query_confirm_bill_page(
+                base_url,
+                token,
+                company_id,
+                invoice_number=invoice_number,
+                confirm_order_type=int(payload.get("confirmOrderType") or 2003),
+                page_size=20,
+            )
+            existing_rows = (((existing.get("response") or {}).get("result") or {}).get("data") or [])
+            if existing.get("ok") and existing_rows:
+                result["create_results"].append(
+                    {
+                        "ok": False,
+                        "skipped": True,
+                        "reason": "系统中已存在相同 invoiceNumber 的确认单记录",
+                        "payload": payload,
+                        "existing_rows": existing_rows,
+                    }
+                )
+                skipped_count += 1
+                continue
+
+            create_result = submit_new_confirm(
+                base_url,
+                token,
+                payload,
+                company_id=company_id,
+            )
+            if create_result.get("ok"):
+                created_rows = (((query_confirm_bill_page(
+                    base_url,
+                    token,
+                    company_id,
+                    invoice_number=invoice_number,
+                    confirm_order_type=int(payload.get("confirmOrderType") or 2003),
+                    page_size=20,
+                ).get("response") or {}).get("result") or {}).get("data") or [])
+                if created_rows:
+                    created_rows.sort(key=lambda row: row.get("createdTime") or "", reverse=True)
+                    create_result["created_rows"] = created_rows
+                    create_result["post_update_result"] = enrich_confirm_with_subjects(
+                        base_url,
+                        token,
+                        company_id,
+                        confirm_id=int(created_rows[0].get("id")),
+                        confirm_order_type=int(payload.get("confirmOrderType") or 2003),
+                        bank_txn={},
+                        invoice=candidate.get("invoice") or {},
+                    )
+            result["create_results"].append(create_result)
+            if create_result.get("ok"):
+                success_count += 1
+
+        result["success"] = success_count > 0
+        result["created_count"] = success_count
+        result["skipped_count"] = skipped_count
+        if success_count:
+            result["message"] = f"已新增 {success_count} 条应收账款确认单"
+        else:
+            result["message"] = "没有新增应收账款确认单；请查看 create_results 中的跳过或失败原因。"
     elif args.create_exceptions:
         unmatched_bank = dedupe_exception_candidates(extract_unmatched_bank_entries(slip))
         creation_payloads = [

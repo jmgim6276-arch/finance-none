@@ -315,6 +315,7 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.p
   - `transTime` / `accountDate`
   - `outBankAccountNo`
   - `outBankAccountName`
+  - `ereceiptUrl` / `attachment`
   - `abstracts`
   - `purpose`
   - `orderNo`
@@ -325,6 +326,9 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.p
 - 对方户名分类：
   - 户名字数 `< 4` -> `个人`
   - 户名字数 `>= 4` -> `公司`
+- 回单判断：
+  - `ereceiptUrl` 或 `attachment` 非空 -> `有回单`
+  - 两者都为空 -> `无回单`
 - 当前阶段金额匹配只允许**精确一致**
 
 #### 进项发票 - 发票获取
@@ -351,24 +355,28 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.p
   - 发票状态
 - 金额比对优先使用**价税合计**，不要拿税额单独去匹配银行金额
 
-### 当前版本匹配规则（V1）
+### 当前版本匹配规则（V2）
 
-- 当前版本只自动处理：
-  - 银企直连 `减少(贷)` 记录
-  - 进项发票“发票获取”详情
-  - 金额精确一致
-  - 名称精确一致
+- 数量口径必须分开汇报：
+  - `records_total_count` = 全量原始数
+  - `records_filtered_count` = 当前期间筛选数
+  - 不要把银企直连 `77` 条全量和 `15` 条期间数据混成一组，也不要把发票获取 `172` 条全量和 `56` 条期间数据混成一组
+- 当前版本自动判断 4 类候选：
+  - `1001` 支出发票确认单（对公）：`减少(贷)` + 进项发票 + 名称一致 + 金额一致 + `有回单`
+  - `1004` 应付账款确认单：进项发票未形成可确认的付款回单匹配时，保留为发票独立挂账候选
+  - `2001` 收款发票确认单：`增加(借)` + 销项发票 + 名称一致 + 金额一致 + `有回单`
+  - `2003` 应收账款确认单：销项发票未形成可确认的收款回单匹配时，保留为发票独立挂账候选
 - 标准匹配条件：
-  - 银企直连 `outBankAccountName` 与进项发票 `sellerName` 完全一致
-  - 银企直连 `amount` 与进项发票 `价税合计` 完全一致
-- 满足后才视为“可生成确认单候选”
+  - 支出侧：银企直连 `outBankAccountName` = 进项发票 `sellerName`
+  - 收入侧：银企直连 `outBankAccountName` = 销项发票 `buyerName`
+  - 银企直连 `amount` = 发票 `价税合计`
 - 以下情况不要强行生成确认单，先输出异常数据：
   - 对方户名判定为 `个人`
   - 金额不一致
   - 名称不一致
   - 发票详情拿不全
   - 需要模糊匹配 / 多对一 / 一对多 / 部分核销
-- `增加(借)` 与销项发票 / 收款确认逻辑先保留给后续版本，不要现在擅自补逻辑
+  - 已找到同名同额发票，但银行流水 `无回单`
 
 ### 当前 UAT 观察
 
@@ -416,20 +424,34 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.p
   - 同日继续确认：
     - 真实会计科目树可通过 `GET /api/erp/accountingSubject/queryAccountingSubjectTreeByMerchantNo?merchantNo=...`
     - `merchantNo=C680513` 的当前 UAT 科目树里：
+      - `80400 = 应收账款`
+      - `80434 = 应付账款`
       - `80552 = 银行存款_平安银行0099`
       - `80578 = 管理费用_房租水电`
+      - `80559 = 主营业务收入_服务收入`
       - `80448 = 应交税费_应交增值税`
     - 当前树里没有单独名为“进项税额”的明细叶子；自动化含税分录先用 `80448`
+    - 当前树里也没有单独“销项税额”叶子；收款/应收确认单的税额也先落到 `80448`
   - 同日也已实测：对未匹配银行流水，调用
     - `confirmStatus=4`
     - 按 `transNo` 去重后提交
     可成功新增异常池确认单
   - 当前脚本策略：
     - `create_matched`：已匹配成功的交易优先新增 `CONFIRMING(1)`；如能推断科目，会在创建链路中带上 `accountSubjects`，并在后续 `update` 再补齐一次
+    - `create_payables`：未匹配付款回单的进项发票可新增 `1004 / 应付账款确认单`
+    - `create_receivables`：未匹配收款回单的销项发票可新增 `2003 / 应收账款确认单`
     - 含税的支出发票确认单必须拆成：
       - 借：费用科目 = `amountWithoutTax`
       - 借：`80448 / 应交税费_应交增值税` = `taxAmount`
       - 贷：银行存款明细科目 = `totalAmount`
+    - 含税的应付账款确认单必须拆成：
+      - 借：费用 / 成本科目 = `amountWithoutTax`
+      - 借：`80448 / 应交税费_应交增值税` = `taxAmount`
+      - 贷：`80434 / 应付账款` = `totalAmount`
+    - 含税的收款发票确认单 / 应收账款确认单必须拆成：
+      - 借：银行存款或应收账款 = `totalAmount`
+      - 贷：主营业务收入 = `amountWithoutTax`
+      - 贷：`80448 / 应交税费_应交增值税` = `taxAmount`
     - 无税额时，才允许保留“一个借方费用 + 一个贷方银行”的两行分录
     - `create_exceptions`：未匹配银行流水按 `transNo` 去重后新增 `EXCEPTION(4)`
 

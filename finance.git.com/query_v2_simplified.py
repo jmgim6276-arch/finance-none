@@ -72,7 +72,49 @@ def query_bank(token: str, company_id: int, start_date: str, end_date: str, page
     }
     try:
         resp = requests.post(url, json=payload, headers=build_headers(token), timeout=20)
-        return response_to_records("/api/pay/transactionRecord/queryPage", payload, resp)
+        base = response_to_records("/api/pay/transactionRecord/queryPage", payload, resp)
+        if not base.get("ok"):
+            return base
+
+        filtered_records = list((base.get("data") or {}).get("records") or [])
+        filtered_total = int((base.get("data") or {}).get("totalCount") or len(filtered_records) or 0)
+
+        fallback_payload = {
+            "companyId": company_id,
+            "merchantNos": [],
+            "startOrderDate": None,
+            "endOrderDate": None,
+            "pageNumber": 1,
+            "pageSize": page_size,
+        }
+        fallback_resp = requests.post(
+            url,
+            json=fallback_payload,
+            headers=build_headers(token),
+            timeout=20,
+        )
+        fallback = response_to_records("/api/pay/transactionRecord/queryPage", fallback_payload, fallback_resp)
+        base["full_unfiltered"] = fallback
+        if not fallback.get("ok"):
+            base["data"] = {
+                "records_total_count": filtered_total,
+                "records_filtered_count": filtered_total,
+                "server_filtered_count": filtered_total,
+                "records": filtered_records,
+            }
+            return base
+
+        all_records = list((fallback.get("data") or {}).get("records") or [])
+        local_filtered = filter_by_date(all_records, start_date, end_date, "accountDate")
+        base["data"] = {
+            "records_total_count": len(all_records),
+            "records_filtered_count": filtered_total,
+            "server_filtered_count": filtered_total,
+            "client_filtered_count": len(local_filtered),
+            "records": filtered_records,
+        }
+        base["note"] = "银企直连同时保留全量总数与按日期过滤后的结果，避免把 77 条全量与 15 条期间数据混淆。"
+        return base
     except Exception as exc:
         return {
             "ok": False,
@@ -229,6 +271,13 @@ def count_records(section: Dict[str, Any]) -> int:
     return len(data.get("records") or [])
 
 
+def count_full_records(section: Dict[str, Any]) -> int:
+    data = section.get("data") or {}
+    if "records_total_count" in data:
+        return int(data.get("records_total_count") or 0)
+    return int(data.get("totalCount") or len(data.get("records") or []) or 0)
+
+
 def main() -> None:
     from browser_session import get_auth
 
@@ -287,9 +336,18 @@ def main() -> None:
 
     print(f"✅ 数据查询完成，已保存到 {args.output}")
     print("\n结果摘要：")
-    print(f"  银企直连：{'✓' if bank_result.get('ok') else '✗'} ({count_records(bank_result)} 条)")
-    print(f"  进项发票：{'✓' if input_fetch_result.get('ok') else '✗'} ({count_records(input_fetch_result)} 条)")
-    print(f"  销项发票：{'✓' if output_result.get('ok') else '✗'} ({count_records(output_result)} 条)")
+    print(
+        f"  银企直连：{'✓' if bank_result.get('ok') else '✗'} "
+        f"({count_records(bank_result)} 条， 全量 {count_full_records(bank_result)} 条)"
+    )
+    print(
+        f"  进项发票：{'✓' if input_fetch_result.get('ok') else '✗'} "
+        f"({count_records(input_fetch_result)} 条， 全量 {count_full_records(input_fetch_result)} 条)"
+    )
+    print(
+        f"  销项发票：{'✓' if output_result.get('ok') else '✗'} "
+        f"({count_records(output_result)} 条， 全量 {count_full_records(output_result)} 条)"
+    )
 
 
 if __name__ == "__main__":

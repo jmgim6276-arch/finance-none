@@ -23,6 +23,9 @@ def generate_slip(comparison: Dict[str, Any], query_result: Dict[str, Any]) -> D
     stats = comparison.get("statistics", {})
     summary = comparison.get("summary", {})
     matched_pairs = comparison.get("matched_pairs", [])
+    candidate_confirms = comparison.get("candidate_confirms", {})
+    accounts_payable_candidates = candidate_confirms.get("accounts_payable", [])
+    accounts_receivable_candidates = candidate_confirms.get("accounts_receivable", [])
 
     no_activity = bool(summary.get("no_activity"))
     if no_activity:
@@ -36,22 +39,27 @@ def generate_slip(comparison: Dict[str, Any], query_result: Dict[str, Any]) -> D
         submit_hint = (
             f"当前期间存在 {len(matched_pairs)} 条已匹配成功的交易级确认单候选。"
             " 对这些已匹配交易，可直接调用 /api/bill/order-confirmation/submit 新增确认单；"
+            " 对未匹配但满足发票独立挂账条件的数据，可分别走应付账款/应收账款确认单；"
             " 不能直接把整份汇总对账单当作一张“总结单”上传。"
         )
         submission_capability = {
             "canCreateMatchedConfirms": True,
             "matchedCount": len(matched_pairs),
+            "accountsPayableCandidateCount": len(accounts_payable_candidates),
+            "accountsReceivableCandidateCount": len(accounts_receivable_candidates),
             "message": submit_hint,
         }
     else:
         submit_hint = (
             "当前财税通 UAT 的确认单管理页为交易级确认单页面。"
             " 当前期间没有已匹配成功的交易级确认单候选，因此还不能直接提交确认单；"
-            " 若要继续落库，需要先补足匹配关系，或改走异常池。"
+            " 但仍可根据发票独立挂账规则，继续评估应付账款/应收账款候选。"
         )
         submission_capability = {
             "canCreateMatchedConfirms": False,
             "matchedCount": 0,
+            "accountsPayableCandidateCount": len(accounts_payable_candidates),
+            "accountsReceivableCandidateCount": len(accounts_receivable_candidates),
             "message": submit_hint,
         }
 
@@ -62,19 +70,26 @@ def generate_slip(comparison: Dict[str, Any], query_result: Dict[str, Any]) -> D
         "period": period,
         "summary": {
             "bankTransactionCount": stats.get("bank_transaction_count", 0),
+            "bankTransactionFullCount": stats.get("bank_transaction_full_count", stats.get("bank_transaction_count", 0)),
             "inputInvoiceCount": stats.get("input_invoice_count", 0),
+            "inputInvoiceFullCount": stats.get("input_invoice_full_count", stats.get("input_invoice_count", 0)),
             "outputInvoiceCount": stats.get("output_invoice_count", 0),
+            "outputInvoiceFullCount": stats.get("output_invoice_full_count", stats.get("output_invoice_count", 0)),
             "bankTotal": stats.get("bank_total_amount", 0),
             "inputTotal": stats.get("input_total_amount", 0),
             "outputTotal": stats.get("output_total_amount", 0),
             "matchedPairs": summary.get("total_matched_pairs", 0),
             "unmatchedBank": summary.get("unmatched_bank_count", 0),
             "unmatchedInvoice": summary.get("unmatched_invoice_count", 0),
+            "accountsPayableCandidates": summary.get("accounts_payable_candidate_count", 0),
+            "accountsReceivableCandidates": summary.get("accounts_receivable_candidate_count", 0),
         },
         "reconciliationStatus": summary.get("reconciliation_status", ""),
         "businessConclusion": summary.get("business_conclusion", ""),
         "details": {
             "matchedPairs": comparison.get("matched_pairs", []),
+            "accountsPayableCandidates": accounts_payable_candidates,
+            "accountsReceivableCandidates": accounts_receivable_candidates,
             "unmatchedBankTransactions": comparison.get("unmatched", {}).get("bank_transactions", []),
             "unmatchedInputInvoices": comparison.get("unmatched", {}).get("input_invoices", []),
             "unmatchedOutputInvoices": comparison.get("unmatched", {}).get("output_invoices", []),
@@ -103,9 +118,21 @@ def main() -> None:
     print(f"✅ 确认单已生成：{args.output_slip}")
     print("\n📋 确认单摘要：")
     print(f"  期间：{slip['period'].get('start_date')} ~ {slip['period'].get('end_date')}")
-    print(f"  银企交易：{slip['summary']['bankTransactionCount']} 条 (¥{slip['summary']['bankTotal']})")
-    print(f"  进项发票：{slip['summary']['inputInvoiceCount']} 张 (¥{slip['summary']['inputTotal']})")
-    print(f"  销项发票：{slip['summary']['outputInvoiceCount']} 张 (¥{slip['summary']['outputTotal']})")
+    print(
+        f"  银企交易：{slip['summary']['bankTransactionCount']} 条"
+        f"（全量 {slip['summary']['bankTransactionFullCount']} 条）"
+        f" (¥{slip['summary']['bankTotal']})"
+    )
+    print(
+        f"  进项发票：{slip['summary']['inputInvoiceCount']} 张"
+        f"（全量 {slip['summary']['inputInvoiceFullCount']} 张）"
+        f" (¥{slip['summary']['inputTotal']})"
+    )
+    print(
+        f"  销项发票：{slip['summary']['outputInvoiceCount']} 张"
+        f"（全量 {slip['summary']['outputInvoiceFullCount']} 张）"
+        f" (¥{slip['summary']['outputTotal']})"
+    )
     print(f"  对账状态：{slip['reconciliationStatus']}")
     print(f"  后续动作：{slip['submitHint']}")
 

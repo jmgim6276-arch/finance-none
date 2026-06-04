@@ -248,6 +248,9 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.p
 - `/Users/kaixuanchuangzhi/.openclaw/workspace/finance.git.com/generate_reconciliation_slip.py`
 - `/Users/kaixuanchuangzhi/.openclaw/workspace/finance.git.com/submit_reconciliation_to_cst.py`
 
+处理“匹配确认单 / 异常池 / 借贷分录”类请求时，必须同时参考：
+- `/Users/kaixuanchuangzhi/.openclaw/workspace-wuren-daizhang/skills/finance-workflow/references/confirm-bill-rulebook.md`
+
 不要再使用旧的猜测型接口或旧字段名，例如：
 - `startDate`
 - `endDate`
@@ -295,6 +298,78 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.p
   - 该脚本会输出统一 `records` 结构，方便后续 `generate_comparison_report.py` 与 `generate_reconciliation_slip.py` 直接消费
   - 旧版 `query_v2_simplified.py` 曾因读错财税通返回结构，把银行与进项误报成 `0`；后续不要再复用旧结果文件
 
+### 字段理解规则
+
+#### 银企直连明细查询
+
+- 必须优先读取这些筛选语义：
+  - 公司
+  - 流水号
+  - 银行账号
+  - 交易金额
+  - 交易时间
+  - 业务类型
+- 必须优先读取这些明细字段：
+  - `amount`
+  - `businessType`
+  - `transTime` / `accountDate`
+  - `outBankAccountNo`
+  - `outBankAccountName`
+  - `abstracts`
+  - `purpose`
+  - `orderNo`
+- 业务方向统一按以下规则标准化：
+  - `SUB` / 页面语义“减少” -> `减少(贷)`
+  - `ADD` / 页面语义“增加” -> `增加(借)`
+  - 其他原始值 -> `待核实`
+- 对方户名分类：
+  - 户名字数 `< 4` -> `个人`
+  - 户名字数 `>= 4` -> `公司`
+- 当前阶段金额匹配只允许**精确一致**
+
+#### 进项发票 - 发票获取
+
+- 做“银行流水 vs 发票”匹配时，语义上优先以**发票获取页**为准，不要把“费用发票查询页”当成主匹配源
+- 必须优先读取这些筛选语义：
+  - 发票种类
+  - 发票号码
+  - 发票代码
+  - 购方名称
+  - 购方税号
+  - 销方名称
+  - 销方税号
+  - 开票日期
+- 展开详情时，至少要拿到：
+  - 发票号码 / 代码
+  - 开票日期
+  - 不含税金额
+  - 税率
+  - 税额
+  - 价税合计
+  - 购方名称 / 税号
+  - 销方名称 / 税号
+  - 发票状态
+- 金额比对优先使用**价税合计**，不要拿税额单独去匹配银行金额
+
+### 当前版本匹配规则（V1）
+
+- 当前版本只自动处理：
+  - 银企直连 `减少(贷)` 记录
+  - 进项发票“发票获取”详情
+  - 金额精确一致
+  - 名称精确一致
+- 标准匹配条件：
+  - 银企直连 `outBankAccountName` 与进项发票 `sellerName` 完全一致
+  - 银企直连 `amount` 与进项发票 `价税合计` 完全一致
+- 满足后才视为“可生成确认单候选”
+- 以下情况不要强行生成确认单，先输出异常数据：
+  - 对方户名判定为 `个人`
+  - 金额不一致
+  - 名称不一致
+  - 发票详情拿不全
+  - 需要模糊匹配 / 多对一 / 一对多 / 部分核销
+- `增加(借)` 与销项发票 / 收款确认逻辑先保留给后续版本，不要现在擅自补逻辑
+
 ### 当前 UAT 观察
 
 - 已在 `2026-05-27` 用 `https://cstuat.uf-tree.com` 实测：
@@ -303,6 +378,16 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.p
   - 销项发票 `/api/invoice/salesInvoice/queryInvoiceDetailPage` 在**不带日期筛选**时可成功返回列表，说明账号具备销项发票访问能力
   - 进项发票“发票获取” `/api/invoice/inputinvoice/queryInputInvoicePage` 与销项发票 `/api/invoice/salesInvoice/queryInvoiceDetailPage` 即使走前端真实参数，当前 UAT 仍可能返回 `code=400`、`message=缺少请求体`
 - 因此，如果再次遇到销项发票的 `缺少请求体`，优先判断为“日期筛选链路异常”，不要误答成“账号没有销项权限”
+- 已在 `2026-06-04` 继续做页面级确认：
+  - 银企直连页真实组件：`transaction-record`，查询项为 `merchantNos / orderNo / businessType / orderDate / startOrderDate / endOrderDate / branchName / transAmount / bankAccountNo`
+  - 进项发票页存在两套 `income-manager`：
+    - 费用发票查询：`invoiceStatus / status / expensesNo / ...`
+    - 发票获取：`invoiceClass / invoiceNumber / invoiceCode / buyerName / buyerTaxNo / sellerName / sellerTaxNo / bizDate / bizDateStart / bizDateEnd`
+  - 确认单管理页真实组件：`biz-confirm-bill`，查询项为 `merchantNos / transNo / confirmOrderType / invoiceNumber / toAccountNo / payAccountNo / transTimeRange`
+- 已确认：
+  - 进项发票“发票获取”在**不带日期筛选**时可成功返回全量列表
+  - 但带 `bizDateStart / bizDateEnd / bizDate` 时，即使由页面组件自己调用 `queryTable`，当前 UAT 仍返回 `缺少请求体`
+- 因此，如果用户只是要确认某个期间是否存在“发票获取”进项发票，可先拉无筛选全量列表，再按 `bizDate` 本地过滤
 - 如果用户只是要确认某个期间是否存在销项发票，可先拉无筛选全量销项列表，再按 `invoiceMakeDate` 本地过滤；若过滤结果为 0，直接汇报“该时间段无销项发票”
 - 对 `queryInputInvoicePage` 和销项发票的同类 `缺少请求体` 报错，优先判断为当前 UAT 或后端链路问题，不要重新退回去猜旧字段名
 - 已在 `2026-05-28` 继续确认：
@@ -313,6 +398,32 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.p
   - 当前页面未发现通用“新增总结确认单”的入口，不要再把它误判成可直接上传任意对账总结的页面
   - 如果当前期间三类数据都为 `0`，应直接回报“当前期间无银企流水和发票数据，无需写入确认单管理”
   - 如果当前期间存在交易或发票，但用户要求“写入确认单管理”，应先说明：现有页面能力偏向**更新 / 提交已有交易级确认单**，不是新建任意总结单
+- 已在 `2026-06-04` 补充确认：
+  - 银企直连页本身存在上游确认入口：`POST /api/pay/transactionRecord/confirmData`
+  - 收单交易查询页存在上游确认入口：`POST /api/pay/query/confirmOrder`
+  - 因此“确认单生成”更可能来自交易查询上游动作，不应把 `/bill/query/confirmBill` 当成唯一或首要创建入口
+
+### 确认单填写与状态规则
+
+- 需要填写或校验的核心列：
+  - 摘要
+  - 科目方向
+  - 科目
+  - 金额
+- 摘要优先取：
+  - `abstracts`
+  - `purpose`
+  - `bankRemarks`
+  - `orderNo`
+- 借贷平衡是硬规则：
+  - 必须同时有借方和贷方
+  - 借方合计必须等于贷方合计
+  - 不平衡一律进 `异常池`
+- 当前机器人只应主动推进两种状态：
+  - `CONFIRMING(1)` 待确认
+  - `EXCEPTION(4)` 异常池
+- `CONFIRMED(2)` 与 `POSTED(3)` 需要人工介入，不要自动推进
+- 如果页面可选的确认单类型、用户业务语义、参考规则表三者对不上，先输出 `待核实`，不要硬填
 
 ## Login Verification Rule
 

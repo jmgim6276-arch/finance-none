@@ -83,36 +83,77 @@ def query_bank(token: str, company_id: int, start_date: str, end_date: str, page
         }
 
 
-def query_input_fee(token: str, company_id: int, start_date: str, end_date: str, page_size: int) -> Dict[str, Any]:
-    url = f"{BASE_URL}/api/bill/feeInvoice/queryInvoicePage"
+def query_input_fetch(token: str, company_id: int, start_date: str, end_date: str, page_size: int) -> Dict[str, Any]:
+    url = f"{BASE_URL}/api/invoice/inputinvoice/queryInputInvoicePage"
     payload = {
         "pageSize": page_size,
         "pageNumber": 1,
-        "invoiceStatus": None,
-        "status": None,
-        "expensesNo": None,
-        "projectId": None,
-        "expensesTitle": None,
-        "invoiceCode": None,
+        "invoiceClass": None,
         "invoiceNumber": None,
-        "submitName": None,
-        "merchantNo": None,
-        "submitDate": [],
-        "expensesStartTime": start_date,
-        "expensesEndTime": end_date,
-        "submitInvoiceDate": [],
-        "invoiceStartTime": start_date,
-        "invoiceEndTime": end_date,
-        "feeTypeId": None,
+        "invoiceCode": None,
+        "buyerName": None,
+        "buyerTaxNo": None,
+        "sellerName": None,
+        "sellerTaxNo": None,
+        "bizDate": [],
+        "bizDateStart": start_date,
+        "bizDateEnd": end_date,
         "companyId": company_id,
     }
     try:
         resp = requests.post(url, json=payload, headers=build_headers(token), timeout=20)
-        return response_to_records("/api/bill/feeInvoice/queryInvoicePage", payload, resp)
+        base = response_to_records("/api/invoice/inputinvoice/queryInputInvoicePage", payload, resp)
+        if base.get("ok"):
+            return base
+        if "缺少请求体" not in str(base.get("error") or ""):
+            return base
+
+        fallback_payload = {
+            "pageSize": page_size,
+            "pageNumber": 1,
+            "invoiceClass": None,
+            "invoiceNumber": None,
+            "invoiceCode": None,
+            "buyerName": None,
+            "buyerTaxNo": None,
+            "sellerName": None,
+            "sellerTaxNo": None,
+            "bizDate": [],
+            "bizDateStart": None,
+            "bizDateEnd": None,
+            "companyId": company_id,
+        }
+        fallback_resp = requests.post(
+            url,
+            json=fallback_payload,
+            headers=build_headers(token),
+            timeout=20,
+        )
+        fallback = response_to_records(
+            "/api/invoice/inputinvoice/queryInputInvoicePage",
+            fallback_payload,
+            fallback_resp,
+        )
+        base["unfiltered_probe"] = fallback
+        if not fallback.get("ok"):
+            return base
+
+        all_records = list((fallback.get("data") or {}).get("records") or [])
+        filtered = filter_by_date(all_records, start_date, end_date, "bizDate")
+        base["ok"] = True
+        base["error"] = None
+        base["resolved_via_client_side_filter"] = True
+        base["note"] = "进项发票(发票获取)按无筛选全量列表拉取后，再按 bizDate 本地过滤"
+        base["data"] = {
+            "records_total_count": len(all_records),
+            "records_filtered_count": len(filtered),
+            "records": filtered,
+        }
+        return base
     except Exception as exc:
         return {
             "ok": False,
-            "endpoint": "/api/bill/feeInvoice/queryInvoicePage",
+            "endpoint": "/api/invoice/inputinvoice/queryInputInvoicePage",
             "payload": payload,
             "data": {"records": [], "totalCount": 0, "pageNumber": 1, "pageSize": page_size},
             "error": str(exc),
@@ -223,7 +264,7 @@ def main() -> None:
     print(f"\n🔍 开始查询数据 ({args.start_date} ~ {args.end_date})...")
 
     bank_result = query_bank(token, company_id, args.start_date, args.end_date, args.page_size)
-    input_fee_result = query_input_fee(token, company_id, args.start_date, args.end_date, args.page_size)
+    input_fetch_result = query_input_fetch(token, company_id, args.start_date, args.end_date, args.page_size)
     output_result = query_output(token, company_id, args.start_date, args.end_date, args.page_size)
 
     result = {
@@ -237,7 +278,7 @@ def main() -> None:
             "end_date": args.end_date,
         },
         "bank_transactions": bank_result,
-        "input_fee_invoices": input_fee_result,
+        "input_fetch_invoices": input_fetch_result,
         "output_invoices": output_result,
     }
 
@@ -247,7 +288,7 @@ def main() -> None:
     print(f"✅ 数据查询完成，已保存到 {args.output}")
     print("\n结果摘要：")
     print(f"  银企直连：{'✓' if bank_result.get('ok') else '✗'} ({count_records(bank_result)} 条)")
-    print(f"  进项发票：{'✓' if input_fee_result.get('ok') else '✗'} ({count_records(input_fee_result)} 条)")
+    print(f"  进项发票：{'✓' if input_fetch_result.get('ok') else '✗'} ({count_records(input_fetch_result)} 条)")
     print(f"  销项发票：{'✓' if output_result.get('ok') else '✗'} ({count_records(output_result)} 条)")
 
 

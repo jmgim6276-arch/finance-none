@@ -405,6 +405,88 @@ def query_input_fetch_invoices(
         "bizDateEnd": end_date,
         "companyId": company_id,
     }
+    result = post_query(
+        token,
+        "/api/invoice/inputinvoice/queryInputInvoicePage",
+        payload,
+        page_route="/invoice/input-invoice",
+        ui_date_field="bizDate",
+        request_date_fields={
+            "start": "bizDateStart",
+            "end": "bizDateEnd",
+        },
+    )
+    if not result.get("ok") and "缺少请求体" in str(result.get("error") or ""):
+        probe_result = fetch_full_input_fetch_invoices(
+            token,
+            company_id,
+            page_size=max(1000, page_size),
+        )
+        result["unfiltered_probe"] = probe_result
+        if probe_result.get("ok"):
+            client_side_filtered = filter_input_fetch_invoices_locally(
+                probe_result,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            result["client_side_filtered"] = client_side_filtered
+            result["diagnosis"] = (
+                "发票获取接口本身可访问，但当前 UAT 在带 bizDateStart/"
+                "bizDateEnd/bizDate 的日期筛选时返回 缺少请求体。"
+                " 这更像后端日期筛选链路问题，不是账号权限不足。"
+            )
+            if client_side_filtered.get("ok") and client_side_filtered.get("complete_dataset"):
+                filtered_records = client_side_filtered.get("filtered_records") or []
+                result["upstream_error"] = result.get("error")
+                result["upstream_ok"] = False
+                result["resolved_via_client_side_filter"] = True
+                result["ok"] = True
+                result["error"] = None
+                result["message"] = (
+                    "已通过无筛选全量进项发票获取列表完成本地日期过滤"
+                    if filtered_records
+                    else "该时间段无进项发票"
+                )
+                result["data"] = {
+                    "success": True,
+                    "message": result["message"],
+                    "code": 200,
+                    "result": {
+                        "pageNumber": 1,
+                        "pageSize": len(filtered_records),
+                        "totalPages": 1,
+                        "totalCount": len(filtered_records),
+                        "data": filtered_records,
+                        "extInfos": {
+                            "filterMode": "client-side-bizDate",
+                            "sourceTotalCount": client_side_filtered.get("source_total_count"),
+                        },
+                    },
+                }
+    return result
+
+
+def fetch_full_input_fetch_invoices(
+    token: str,
+    company_id: int,
+    *,
+    page_size: int = 1000,
+) -> Dict[str, Any]:
+    payload = {
+        "pageSize": page_size,
+        "pageNumber": 1,
+        "invoiceClass": None,
+        "invoiceNumber": None,
+        "invoiceCode": None,
+        "buyerName": None,
+        "buyerTaxNo": None,
+        "sellerName": None,
+        "sellerTaxNo": None,
+        "bizDate": [],
+        "bizDateStart": None,
+        "bizDateEnd": None,
+        "companyId": company_id,
+    }
     return post_query(
         token,
         "/api/invoice/inputinvoice/queryInputInvoicePage",
@@ -416,6 +498,51 @@ def query_input_fetch_invoices(
             "end": "bizDateEnd",
         },
     )
+
+
+def filter_input_fetch_invoices_locally(
+    probe_result: Dict[str, Any],
+    *,
+    start_date: str,
+    end_date: str,
+) -> Dict[str, Any]:
+    result_data = ((probe_result or {}).get("data") or {}).get("result") or {}
+    records = list(result_data.get("data") or [])
+    total_count = int(result_data.get("totalCount") or len(records) or 0)
+    page_size = int(result_data.get("pageSize") or len(records) or 10)
+
+    filtered = []
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+
+    for item in records:
+        raw = (item or {}).get("bizDate")
+        if not raw:
+            continue
+        date_text = str(raw).strip()[:10]
+        try:
+            current = datetime.strptime(date_text, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if start_dt <= current <= end_dt:
+            filtered.append(item)
+
+    complete = len(records) >= total_count or page_size >= total_count
+    return {
+        "ok": True,
+        "filter_mode": "client_side_bizDate",
+        "complete_dataset": complete,
+        "source_total_count": total_count,
+        "filtered_count": len(filtered),
+        "filtered_records": filtered,
+        "date_range": {
+            "start_date": start_date,
+            "end_date": end_date,
+        },
+        "note": (
+            "由于 UAT 后端日期筛选返回 缺少请求体，当前结果基于无筛选进项发票获取列表做本地 bizDate 过滤。"
+        ),
+    }
 
 
 def query_output_invoices(
@@ -624,6 +751,23 @@ def parse_args() -> argparse.Namespace:
         default="/Users/kaixuanchuangzhi/.openclaw/workspace/finance.git.com/query_result.json",
         help="输出 JSON 路径",
     )
+    parser.add_argument(
+        "--auto-login",
+        action="store_true",
+        help="自动登录财税通（使用环境变量或参数中的账号密码）",
+    )
+    parser.add_argument(
+        "--username",
+        help="登录手机号（不传则用 CST_USERNAME 环境变量）",
+    )
+    parser.add_argument(
+        "--password",
+        help="登录密码（不传则用 CST_PASSWORD 环境变量）",
+    )
+    parser.add_argument(
+        "--company-name",
+        help="期望进入的集团/公司名称（可选）",
+    )
     return parser.parse_args()
 
 
@@ -633,7 +777,19 @@ def main() -> None:
     args = parse_args()
 
     try:
-        token, company_id, user_id, browser_name = get_auth(auto_login=False)
+        # 根据 --auto-login 标志决定是否自动登录
+        if args.auto_login:
+            username = args.username or os.environ.get("CST_USERNAME")
+            password = args.password or os.environ.get("CST_PASSWORD")
+            token, company_id, user_id, browser_name = get_auth(
+                auto_login=True,
+                username=username,
+                password=password,
+                company_name=args.company_name,
+            )
+        else:
+            token, company_id, user_id, browser_name = get_auth(auto_login=False)
+        
         print("\n✅ 从浏览器获取登录信息：")
         print(f"   Token 前12位: {token[:12]}...")
         print(f"   Company ID: {company_id}")

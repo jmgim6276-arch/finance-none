@@ -61,9 +61,62 @@ def field_date(item: Dict[str, Any], names: List[str]) -> str:
     return ""
 
 
+def normalize_name(value: Any) -> str:
+    return "".join(str(value or "").split())
+
+
+def classify_counterparty(name: Any) -> str:
+    cleaned = normalize_name(name)
+    if not cleaned:
+        return "未知"
+    return "个人" if len(cleaned) < 4 else "公司"
+
+
+def standardize_business_type(value: Any) -> Dict[str, str]:
+    raw = str(value or "").strip().upper()
+    if raw in {"SUB", "减少", "减少(贷)"}:
+        return {"code": "SUB", "label": "减少(贷)"}
+    if raw in {"ADD", "增加", "增加(借)"}:
+        return {"code": "ADD", "label": "增加(借)"}
+    return {"code": raw or "UNKNOWN", "label": str(value or "UNKNOWN")}
+
+
+def extract_input_invoices(query_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    records = extract_records(query_result.get("input_fetch_invoices"))
+    if records:
+        return records
+    return extract_records(query_result.get("input_fee_invoices"))
+
+
+def invoice_total_amount(invoice: Dict[str, Any]) -> float:
+    return field_float(
+        invoice,
+        [
+            "invoiceTotalPrice",
+            "totalPrice",
+            "invoiceMakeTotalAmount",
+            "feeInvoiceAmount",
+            "amountTax",
+            "amount",
+        ],
+    )
+
+
+def make_bank_reason(reason: str, bank: Dict[str, Any], *, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    payload = {
+        "reason": reason,
+        "businessType": standardize_business_type(bank.get("businessType")),
+        "counterpartyType": classify_counterparty(bank.get("outBankAccountName")),
+        "bank_txn": bank,
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
 def compare_data(query_result: Dict[str, Any]) -> Dict[str, Any]:
     bank_txns = extract_records(query_result.get("bank_transactions"))
-    input_invoices = extract_records(query_result.get("input_fee_invoices"))
+    input_invoices = extract_input_invoices(query_result)
     output_invoices = extract_records(query_result.get("output_invoices"))
 
     print("\n📊 对比数据：")
@@ -72,55 +125,113 @@ def compare_data(query_result: Dict[str, Any]) -> Dict[str, Any]:
     print(f"  销项发票：{len(output_invoices)} 条")
 
     bank_total = sum(field_float(item, ["transactionAmount", "transAmount", "amount"]) for item in bank_txns)
-    input_total = sum(field_float(item, ["feeInvoiceAmount", "amountTax", "amount"]) for item in input_invoices)
+    input_total = sum(invoice_total_amount(item) for item in input_invoices)
     output_total = sum(field_float(item, ["invoiceMoney", "invoiceMakeTotalAmount", "invoiceAmount", "amountTax"]) for item in output_invoices)
 
     matched_pairs: List[Dict[str, Any]] = []
-    unmatched_bank = list(bank_txns)
-    unmatched_input = list(input_invoices)
-    unmatched_output = list(output_invoices)
+    unmatched_bank: List[Dict[str, Any]] = []
+    unmatched_input: List[Dict[str, Any]] = []
+    unmatched_output: List[Dict[str, Any]] = []
+    used_invoice_ids = set()
+
+    candidate_map: Dict[str, List[Dict[str, Any]]] = {}
+    for invoice in input_invoices:
+        seller_name = normalize_name(invoice.get("sellerName"))
+        amount = invoice_total_amount(invoice)
+        if not seller_name or not amount:
+            unmatched_input.append(
+                {
+                    "reason": "进项发票缺少销方名称或价税合计，当前版本不自动匹配",
+                    "invoice": invoice,
+                }
+            )
+            continue
+        key = f"{seller_name}|{amount:.2f}"
+        candidate_map.setdefault(key, []).append(invoice)
+
+    for bank in bank_txns:
+        business_type = standardize_business_type(bank.get("businessType"))
+        amount = field_float(bank, ["transactionAmount", "transAmount", "amount"])
+        counterparty_name = normalize_name(bank.get("outBankAccountName"))
+        counterparty_type = classify_counterparty(counterparty_name)
+
+        if business_type["code"] != "SUB":
+            unmatched_bank.append(
+                make_bank_reason("当前版本只自动处理银企直连“减少(贷)”的进项发票匹配", bank)
+            )
+            continue
+        if counterparty_type != "公司":
+            unmatched_bank.append(
+                make_bank_reason("对方银行户名字数少于四个字，按个人处理，不自动匹配进项发票", bank)
+            )
+            continue
+        if not counterparty_name or not amount:
+            unmatched_bank.append(
+                make_bank_reason("银行流水缺少对方户名或订单金额，当前版本不自动匹配", bank)
+            )
+            continue
+
+        key = f"{counterparty_name}|{amount:.2f}"
+        candidates = [
+            invoice
+            for invoice in candidate_map.get(key, [])
+            if str(invoice.get("id")) not in used_invoice_ids
+        ]
+        if not candidates:
+            unmatched_bank.append(
+                make_bank_reason(
+                    "未找到销方名称和订单金额都完全一致的进项发票",
+                    bank,
+                )
+            )
+            continue
+        if len(candidates) > 1:
+            unmatched_bank.append(
+                make_bank_reason(
+                    "存在多张同名同金额进项发票，当前版本不做自动归并",
+                    bank,
+                    extra={
+                        "candidateInvoices": candidates,
+                    },
+                )
+            )
+            continue
+
+        invoice = candidates[0]
+        used_invoice_ids.add(str(invoice.get("id")))
+        matched_pairs.append(
+            {
+                "type": "进项发票(发票获取) <-> 银企直连减少(贷)",
+                "matchBasis": [
+                    "businessType = 减少(贷)",
+                    "sellerName = outBankAccountName",
+                    "invoiceTotalPrice = amount",
+                ],
+                "invoice": invoice,
+                "bank_txn": bank,
+            }
+        )
 
     for invoice in input_invoices:
-        invoice_amount = field_float(invoice, ["feeInvoiceAmount", "amountTax", "amount"])
-        invoice_date = field_date(invoice, ["expensesDate", "expenseTime", "invoiceTime", "invoiceDate"])
-        if not invoice_amount or not invoice_date:
+        invoice_id = str(invoice.get("id"))
+        if invoice_id in used_invoice_ids:
             continue
-        for bank in list(unmatched_bank):
-            bank_amount = field_float(bank, ["transactionAmount", "transAmount", "amount"])
-            bank_date = field_date(bank, ["orderDate", "accountDate", "transTime"])
-            if abs(invoice_amount - bank_amount) < 0.01 and invoice_date == bank_date:
-                matched_pairs.append(
-                    {
-                        "type": "进项发票 <-> 银企直连",
-                        "invoice": invoice,
-                        "bank_txn": bank,
-                    }
-                )
-                unmatched_bank.remove(bank)
-                if invoice in unmatched_input:
-                    unmatched_input.remove(invoice)
-                break
+        if any(entry.get("invoice") is invoice for entry in unmatched_input):
+            continue
+        unmatched_input.append(
+            {
+                "reason": "未找到满足减少(贷) + 销方名称一致 + 金额一致的银企直连流水",
+                "invoice": invoice,
+            }
+        )
 
     for invoice in output_invoices:
-        invoice_amount = field_float(invoice, ["invoiceMoney", "invoiceMakeTotalAmount", "invoiceAmount", "amountTax"])
-        invoice_date = field_date(invoice, ["invoiceMakeDate", "invoiceDate"])
-        if not invoice_amount or not invoice_date:
-            continue
-        for bank in list(unmatched_bank):
-            bank_amount = field_float(bank, ["transactionAmount", "transAmount", "amount"])
-            bank_date = field_date(bank, ["orderDate", "accountDate", "transTime"])
-            if abs(invoice_amount - bank_amount) < 0.01 and invoice_date == bank_date:
-                matched_pairs.append(
-                    {
-                        "type": "销项发票 <-> 银企直连",
-                        "invoice": invoice,
-                        "bank_txn": bank,
-                    }
-                )
-                unmatched_bank.remove(bank)
-                if invoice in unmatched_output:
-                    unmatched_output.remove(invoice)
-                break
+        unmatched_output.append(
+            {
+                "reason": "当前版本未开放销项发票自动匹配，先保留为待人工复核数据",
+                "invoice": invoice,
+            }
+        )
 
     no_activity = not bank_txns and not input_invoices and not output_invoices
     if no_activity:
@@ -157,6 +268,7 @@ def compare_data(query_result: Dict[str, Any]) -> Dict[str, Any]:
             "reconciliation_status": reconciliation_status,
             "business_conclusion": business_conclusion,
             "no_activity": no_activity,
+            "matching_rule_version": "v1-exact-counterparty-and-amount",
         },
     }
 

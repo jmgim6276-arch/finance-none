@@ -393,15 +393,26 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.p
 - 已在 `2026-05-28` 继续确认：
   - `确认单管理` 真实页面路由是 `/bill/query/confirmBill`
   - 页面真实列表接口是 `POST /api/bill/order-confirmation/queryOrderConfirmPage`
+  - 页面真实新增接口是 `POST /api/bill/order-confirmation/submit`
   - 页面真实更新接口是 `POST /api/bill/order-confirmation/update`
   - 页面真实“提交已有确认单”接口是 `POST /api/bill/order-confirmation/submitExpenses`
-  - 当前页面未发现通用“新增总结确认单”的入口，不要再把它误判成可直接上传任意对账总结的页面
+  - 当前页面并非“上传任意总结单”的入口，但对满足条件的交易级确认单，可以直接走 `submit`
   - 如果当前期间三类数据都为 `0`，应直接回报“当前期间无银企流水和发票数据，无需写入确认单管理”
-  - 如果当前期间存在交易或发票，但用户要求“写入确认单管理”，应先说明：现有页面能力偏向**更新 / 提交已有交易级确认单**，不是新建任意总结单
+  - 如果当前期间存在交易或发票，但用户要求“写入确认单管理”，应区分两类能力：
+    - 对**已匹配成功**的交易级确认单，可尝试调用 `POST /api/bill/order-confirmation/submit`
+    - 对任意“汇总型对账总结单”，仍不要误判成可以直接新建
 - 已在 `2026-06-04` 补充确认：
   - 银企直连页本身存在上游确认入口：`POST /api/pay/transactionRecord/confirmData`
   - 收单交易查询页存在上游确认入口：`POST /api/pay/query/confirmOrder`
   - 因此“确认单生成”更可能来自交易查询上游动作，不应把 `/bill/query/confirmBill` 当成唯一或首要创建入口
+  - 同日已实测：对唯一一条“减少(贷) + 销方名称一致 + 金额一致”的匹配样本，调用
+    - `confirmOrderType=1001`
+    - `transNo`
+    - `detailNo`
+    - `invoiceNumber`
+    - `confirmStatus=1`
+    - `voucherDiest`
+    可成功新增确认单，系统创建了新记录
 
 ### 确认单填写与状态规则
 

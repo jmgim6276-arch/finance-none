@@ -73,10 +73,11 @@
 - 已于 `2026-05-28` 确认“确认单管理”真实能力：
   - 页面路由：`/bill/query/confirmBill`
   - 列表接口：`POST /api/bill/order-confirmation/queryOrderConfirmPage`
+  - 新增接口：`POST /api/bill/order-confirmation/submit`
   - 更新接口：`POST /api/bill/order-confirmation/update`
   - 提交已有确认单接口：`POST /api/bill/order-confirmation/submitExpenses`
   - 明细接口：`POST /api/bill/order-confirmation/detail`
-  - 当前页面未发现通用“新增总结确认单”入口，不要再把它当成可上传任意对账总结的页面
+  - 当前页面不适合“上传任意总结型确认单”，但对已匹配成功的交易级确认单，可直接走 `submit`
   - 如果用户要求“对比结果生成确认单写入确认单管理”，应先判断当前期间是否存在可落库的交易级确认单数据
   - 若当前期间三类数据都为 `0`，直接回报“当前期间无银企流水和发票数据，无需写入确认单管理”
   - 若存在交易 / 发票，但没有对应已有确认单记录或没有明确 `confirm id`，不要假装已写入；应明确告诉用户当前页面更像“更新 / 提交已有确认单”，不是从零新建总结单
@@ -84,6 +85,14 @@
   - 银企直连页存在上游确认入口：`POST /api/pay/transactionRecord/confirmData`
   - 收单交易查询页存在上游确认入口：`POST /api/pay/query/confirmOrder`
   - 因此“确认单生成”应优先理解为**交易查询上游确认动作**，而不是先去 `/bill/query/confirmBill` 页面硬造新单
+  - 同日已实测：对符合 V1 规则的匹配样本，可用以下最小字段直接新增确认单：
+    - `confirmOrderType=1001`
+    - `transNo`
+    - `detailNo`
+    - `invoiceNumber`
+    - `confirmStatus=1`
+    - `voucherDiest`
+  - 样本流水 `0164612605120167570419` 已成功写入系统，新记录 `id=29`
 - 确认单硬规则：
   - 机器人只应主动推进 `CONFIRMING(1)` 与 `EXCEPTION(4)`
   - `CONFIRMED(2)` 与 `POSTED(3)` 需要人工介入

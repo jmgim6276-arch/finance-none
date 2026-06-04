@@ -68,10 +68,26 @@
 
 - 页面：`/bill/query/confirmBill`
 - 查询接口：`POST /api/bill/order-confirmation/queryOrderConfirmPage`
+- 新增接口：`POST /api/bill/order-confirmation/submit`
 - 更新接口：`POST /api/bill/order-confirmation/update`
 - 提交已有确认单：`POST /api/bill/order-confirmation/submitExpenses`
 
-注意：确认单管理页当前不是“任意总结单上传入口”，更像“已有确认单记录的查询 / 修改 / 提交页”。
+注意：确认单管理页当前不是“任意总结单上传入口”，但对满足条件的交易级确认单，可以直接调用 `submit` 新增。
+
+**2026-06-04 已验证的最小新增字段**
+
+- `confirmOrderType=1001`
+- `transNo`
+- `detailNo`
+- `invoiceNumber`
+- `confirmStatus=1`
+- `voucherDiest`
+
+UAT 已成功样本：
+
+- 流水号：`0164612605120167570419`
+- 发票号：`26422000001699339441`
+- 新创建确认单：`id=29`
 
 ## 2. 标准化规则
 

@@ -22,15 +22,38 @@ def generate_slip(comparison: Dict[str, Any], query_result: Dict[str, Any]) -> D
     period = query_result.get("query_period", {})
     stats = comparison.get("statistics", {})
     summary = comparison.get("summary", {})
+    matched_pairs = comparison.get("matched_pairs", [])
 
     no_activity = bool(summary.get("no_activity"))
     if no_activity:
         submit_hint = "当前期间无银企流水与发票数据，无需写入确认单管理。"
+        submission_capability = {
+            "canCreateMatchedConfirms": False,
+            "matchedCount": 0,
+            "message": submit_hint,
+        }
+    elif matched_pairs:
+        submit_hint = (
+            f"当前期间存在 {len(matched_pairs)} 条已匹配成功的交易级确认单候选。"
+            " 对这些已匹配交易，可直接调用 /api/bill/order-confirmation/submit 新增确认单；"
+            " 不能直接把整份汇总对账单当作一张“总结单”上传。"
+        )
+        submission_capability = {
+            "canCreateMatchedConfirms": True,
+            "matchedCount": len(matched_pairs),
+            "message": submit_hint,
+        }
     else:
         submit_hint = (
             "当前财税通 UAT 的确认单管理页为交易级确认单页面。"
-            "若要继续落库，需要先确认是否存在可更新/可提交的确认单记录。"
+            " 当前期间没有已匹配成功的交易级确认单候选，因此还不能直接提交确认单；"
+            " 若要继续落库，需要先补足匹配关系，或改走异常池。"
         )
+        submission_capability = {
+            "canCreateMatchedConfirms": False,
+            "matchedCount": 0,
+            "message": submit_hint,
+        }
 
     return {
         "docType": "reconciliationSlip",
@@ -58,6 +81,7 @@ def generate_slip(comparison: Dict[str, Any], query_result: Dict[str, Any]) -> D
         },
         "remark": "自动生成的流水与发票对账确认单，供复核与留档使用。",
         "submitHint": submit_hint,
+        "submissionCapability": submission_capability,
         "generatedAt": datetime.now().isoformat(),
     }
 

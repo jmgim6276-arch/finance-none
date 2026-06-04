@@ -11,7 +11,7 @@ import json
 import os
 import sys
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import requests
 
@@ -60,13 +60,17 @@ def response_to_records(
     }
 
 
-def query_bank(token: str, company_id: int, start_date: str, end_date: str, page_size: int) -> Dict[str, Any]:
+def has_date_range(start_date: Optional[str], end_date: Optional[str]) -> bool:
+    return bool(start_date and end_date)
+
+
+def query_bank(token: str, company_id: int, start_date: Optional[str], end_date: Optional[str], page_size: int) -> Dict[str, Any]:
     url = f"{BASE_URL}/api/pay/transactionRecord/queryPage"
     payload = {
         "companyId": company_id,
         "merchantNos": [],
-        "startOrderDate": start_date,
-        "endOrderDate": end_date,
+        "startOrderDate": start_date if has_date_range(start_date, end_date) else None,
+        "endOrderDate": end_date if has_date_range(start_date, end_date) else None,
         "pageNumber": 1,
         "pageSize": page_size,
     }
@@ -78,6 +82,15 @@ def query_bank(token: str, company_id: int, start_date: str, end_date: str, page
 
         filtered_records = list((base.get("data") or {}).get("records") or [])
         filtered_total = int((base.get("data") or {}).get("totalCount") or len(filtered_records) or 0)
+        if not has_date_range(start_date, end_date):
+            base["data"] = {
+                "records_total_count": filtered_total,
+                "records_filtered_count": filtered_total,
+                "server_filtered_count": filtered_total,
+                "records": filtered_records,
+            }
+            base["note"] = "未指定日期区间，银企直连按全量列表返回。"
+            return base
 
         fallback_payload = {
             "companyId": company_id,
@@ -125,7 +138,7 @@ def query_bank(token: str, company_id: int, start_date: str, end_date: str, page
         }
 
 
-def query_input_fetch(token: str, company_id: int, start_date: str, end_date: str, page_size: int) -> Dict[str, Any]:
+def query_input_fetch(token: str, company_id: int, start_date: Optional[str], end_date: Optional[str], page_size: int) -> Dict[str, Any]:
     url = f"{BASE_URL}/api/invoice/inputinvoice/queryInputInvoicePage"
     payload = {
         "pageSize": page_size,
@@ -138,14 +151,22 @@ def query_input_fetch(token: str, company_id: int, start_date: str, end_date: st
         "sellerName": None,
         "sellerTaxNo": None,
         "bizDate": [],
-        "bizDateStart": start_date,
-        "bizDateEnd": end_date,
+        "bizDateStart": start_date if has_date_range(start_date, end_date) else None,
+        "bizDateEnd": end_date if has_date_range(start_date, end_date) else None,
         "companyId": company_id,
     }
     try:
         resp = requests.post(url, json=payload, headers=build_headers(token), timeout=20)
         base = response_to_records("/api/invoice/inputinvoice/queryInputInvoicePage", payload, resp)
         if base.get("ok"):
+            if not has_date_range(start_date, end_date):
+                records = list((base.get("data") or {}).get("records") or [])
+                base["data"] = {
+                    "records_total_count": len(records),
+                    "records_filtered_count": len(records),
+                    "records": records,
+                }
+                base["note"] = "未指定日期区间，进项发票(发票获取)按全量列表返回。"
             return base
         if "缺少请求体" not in str(base.get("error") or ""):
             return base
@@ -181,11 +202,15 @@ def query_input_fetch(token: str, company_id: int, start_date: str, end_date: st
             return base
 
         all_records = list((fallback.get("data") or {}).get("records") or [])
-        filtered = filter_by_date(all_records, start_date, end_date, "bizDate")
+        filtered = filter_by_date(all_records, start_date, end_date, "bizDate") if has_date_range(start_date, end_date) else list(all_records)
         base["ok"] = True
         base["error"] = None
         base["resolved_via_client_side_filter"] = True
-        base["note"] = "进项发票(发票获取)按无筛选全量列表拉取后，再按 bizDate 本地过滤"
+        base["note"] = (
+            "进项发票(发票获取)按无筛选全量列表拉取后，再按 bizDate 本地过滤"
+            if has_date_range(start_date, end_date)
+            else "未指定日期区间，进项发票(发票获取)按全量列表返回。"
+        )
         base["data"] = {
             "records_total_count": len(all_records),
             "records_filtered_count": len(filtered),
@@ -213,7 +238,9 @@ def normalize_date_text(raw: Any) -> str:
     return text[:10]
 
 
-def filter_by_date(records: List[Dict[str, Any]], start_date: str, end_date: str, date_field: str) -> List[Dict[str, Any]]:
+def filter_by_date(records: List[Dict[str, Any]], start_date: Optional[str], end_date: Optional[str], date_field: str) -> List[Dict[str, Any]]:
+    if not has_date_range(start_date, end_date):
+        return list(records)
     filtered: List[Dict[str, Any]] = []
     for record in records:
         date_text = normalize_date_text(record.get(date_field))
@@ -222,7 +249,7 @@ def filter_by_date(records: List[Dict[str, Any]], start_date: str, end_date: str
     return filtered
 
 
-def query_output(token: str, company_id: int, start_date: str, end_date: str, page_size: int) -> Dict[str, Any]:
+def query_output(token: str, company_id: int, start_date: Optional[str], end_date: Optional[str], page_size: int) -> Dict[str, Any]:
     url = f"{BASE_URL}/api/invoice/salesInvoice/queryInvoiceDetailPage"
     payload = {
         "pageSize": page_size,
@@ -248,7 +275,11 @@ def query_output(token: str, company_id: int, start_date: str, end_date: str, pa
             "records_filtered_count": len(filtered),
             "records": filtered,
         }
-        base["note"] = "销项发票按无筛选全量列表拉取后，再按 invoiceMakeDate 本地过滤"
+        base["note"] = (
+            "销项发票按无筛选全量列表拉取后，再按 invoiceMakeDate 本地过滤"
+            if has_date_range(start_date, end_date)
+            else "未指定日期区间，销项发票按全量列表返回。"
+        )
         return base
     except Exception as exc:
         return {
@@ -282,8 +313,8 @@ def main() -> None:
     from browser_session import get_auth
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--start-date", default="2026-05-01")
-    parser.add_argument("--end-date", default="2026-05-31")
+    parser.add_argument("--start-date", help="开始日期，格式 YYYY-MM-DD；不传则按全量拉取")
+    parser.add_argument("--end-date", help="结束日期，格式 YYYY-MM-DD；不传则按全量拉取")
     parser.add_argument("--page-size", type=int, default=1000)
     parser.add_argument("--auto-login", action="store_true")
     parser.add_argument("--username", help="登录手机号")
@@ -310,7 +341,16 @@ def main() -> None:
         print(f"❌ 登录失败: {exc}")
         return
 
-    print(f"\n🔍 开始查询数据 ({args.start_date} ~ {args.end_date})...")
+    if bool(args.start_date) != bool(args.end_date):
+        print("❌ 日期区间必须同时提供开始和结束日期；若不指定日期，请两个参数都不要传。")
+        return
+
+    query_mode_text = (
+        f"{args.start_date} ~ {args.end_date}"
+        if has_date_range(args.start_date, args.end_date)
+        else "全量数据"
+    )
+    print(f"\n🔍 开始查询数据 ({query_mode_text})...")
 
     bank_result = query_bank(token, company_id, args.start_date, args.end_date, args.page_size)
     input_fetch_result = query_input_fetch(token, company_id, args.start_date, args.end_date, args.page_size)
@@ -325,6 +365,7 @@ def main() -> None:
         "query_period": {
             "start_date": args.start_date,
             "end_date": args.end_date,
+            "mode": "range" if has_date_range(args.start_date, args.end_date) else "all",
         },
         "bank_transactions": bank_result,
         "input_fetch_invoices": input_fetch_result,

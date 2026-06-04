@@ -42,6 +42,10 @@ def build_headers(token: str) -> Dict[str, str]:
     return headers
 
 
+def has_date_range(start_date: Any, end_date: Any) -> bool:
+    return bool(start_date and end_date)
+
+
 def post_query(
     token: str,
     endpoint: str,
@@ -309,8 +313,8 @@ def post_query_via_page_vm(
 def query_bank_transactions(
     token: str,
     company_id: int,
-    start_date: str,
-    end_date: str,
+    start_date: Any,
+    end_date: Any,
     *,
     page_size: int,
     page_number: int,
@@ -318,8 +322,8 @@ def query_bank_transactions(
     payload = {
         "companyId": company_id,
         "merchantNos": [],
-        "startOrderDate": start_date,
-        "endOrderDate": end_date,
+        "startOrderDate": start_date if has_date_range(start_date, end_date) else None,
+        "endOrderDate": end_date if has_date_range(start_date, end_date) else None,
         "pageNumber": page_number,
         "pageSize": page_size,
     }
@@ -339,8 +343,8 @@ def query_bank_transactions(
 def query_input_fee_invoices(
     token: str,
     company_id: int,
-    start_date: str,
-    end_date: str,
+    start_date: Any,
+    end_date: Any,
     *,
     page_size: int,
     page_number: int,
@@ -358,11 +362,11 @@ def query_input_fee_invoices(
         "submitName": None,
         "merchantNo": None,
         "submitDate": [],
-        "expensesStartTime": start_date,
-        "expensesEndTime": end_date,
+        "expensesStartTime": start_date if has_date_range(start_date, end_date) else None,
+        "expensesEndTime": end_date if has_date_range(start_date, end_date) else None,
         "submitInvoiceDate": [],
-        "invoiceStartTime": start_date,
-        "invoiceEndTime": end_date,
+        "invoiceStartTime": start_date if has_date_range(start_date, end_date) else None,
+        "invoiceEndTime": end_date if has_date_range(start_date, end_date) else None,
         "feeTypeId": None,
         "companyId": company_id,
     }
@@ -384,8 +388,8 @@ def query_input_fee_invoices(
 def query_input_fetch_invoices(
     token: str,
     company_id: int,
-    start_date: str,
-    end_date: str,
+    start_date: Any,
+    end_date: Any,
     *,
     page_size: int,
     page_number: int,
@@ -401,8 +405,8 @@ def query_input_fetch_invoices(
         "sellerName": None,
         "sellerTaxNo": None,
         "bizDate": [],
-        "bizDateStart": start_date,
-        "bizDateEnd": end_date,
+        "bizDateStart": start_date if has_date_range(start_date, end_date) else None,
+        "bizDateEnd": end_date if has_date_range(start_date, end_date) else None,
         "companyId": company_id,
     }
     result = post_query(
@@ -444,8 +448,8 @@ def query_input_fetch_invoices(
                 result["error"] = None
                 result["message"] = (
                     "已通过无筛选全量进项发票获取列表完成本地日期过滤"
-                    if filtered_records
-                    else "该时间段无进项发票"
+                    if has_date_range(start_date, end_date) and filtered_records
+                    else ("该时间段无进项发票" if has_date_range(start_date, end_date) else "未指定日期区间，已返回全量进项发票")
                 )
                 result["data"] = {
                     "success": True,
@@ -503,13 +507,29 @@ def fetch_full_input_fetch_invoices(
 def filter_input_fetch_invoices_locally(
     probe_result: Dict[str, Any],
     *,
-    start_date: str,
-    end_date: str,
+    start_date: Any,
+    end_date: Any,
 ) -> Dict[str, Any]:
     result_data = ((probe_result or {}).get("data") or {}).get("result") or {}
     records = list(result_data.get("data") or [])
     total_count = int(result_data.get("totalCount") or len(records) or 0)
     page_size = int(result_data.get("pageSize") or len(records) or 10)
+
+    if not has_date_range(start_date, end_date):
+        filtered = list(records)
+        return {
+            "ok": True,
+            "filter_mode": "full_dataset",
+            "complete_dataset": len(records) >= total_count or page_size >= total_count,
+            "source_total_count": total_count,
+            "filtered_count": len(filtered),
+            "filtered_records": filtered,
+            "date_range": {
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+            "note": "未指定日期区间，返回全量进项发票获取列表。",
+        }
 
     filtered = []
     start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
@@ -548,8 +568,8 @@ def filter_input_fetch_invoices_locally(
 def query_output_invoices(
     token: str,
     company_id: int,
-    start_date: str,
-    end_date: str,
+    start_date: Any,
+    end_date: Any,
     *,
     page_size: int,
     page_number: int,
@@ -563,8 +583,8 @@ def query_output_invoices(
         "merchantNo": None,
         "invoiceType": None,
         "invoiceNumber": None,
-        "invoiceMakeDateEnd": end_date,
-        "invoiceMakeDateStart": start_date,
+        "invoiceMakeDateEnd": end_date if has_date_range(start_date, end_date) else None,
+        "invoiceMakeDateStart": start_date if has_date_range(start_date, end_date) else None,
         "invoiceMakeDate": [],
         "companyId": company_id,
     }
@@ -633,8 +653,8 @@ def query_output_invoices(
                 result["error"] = None
                 result["message"] = (
                     "已通过无筛选全量销项列表完成本地日期过滤"
-                    if filtered_records
-                    else "该时间段无销项发票"
+                    if has_date_range(start_date, end_date) and filtered_records
+                    else ("该时间段无销项发票" if has_date_range(start_date, end_date) else "未指定日期区间，已返回全量销项发票")
                 )
                 result["data"] = {
                     "success": True,
@@ -691,14 +711,30 @@ def fetch_full_output_invoices(
 def filter_output_invoices_locally(
     probe_result: Dict[str, Any],
     *,
-    start_date: str,
-    end_date: str,
+    start_date: Any,
+    end_date: Any,
 ) -> Dict[str, Any]:
     result_data = ((probe_result or {}).get("data") or {}).get("result") or {}
     records = list(result_data.get("data") or [])
     total_count = int(result_data.get("totalCount") or len(records) or 0)
     page_size = int(result_data.get("pageSize") or len(records) or 10)
     page_number = int(result_data.get("pageNumber") or 1)
+
+    if not has_date_range(start_date, end_date):
+        filtered = list(records)
+        return {
+            "ok": True,
+            "filter_mode": "full_dataset",
+            "complete_dataset": len(records) >= total_count or page_size >= total_count,
+            "source_total_count": total_count,
+            "filtered_count": len(filtered),
+            "filtered_records": filtered,
+            "date_range": {
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+            "note": "未指定日期区间，返回全量销项发票列表。",
+        }
 
     filtered = []
     start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
@@ -736,8 +772,8 @@ def filter_output_invoices_locally(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="按财税通前端真实参数读取交易/发票数据")
-    parser.add_argument("--start-date", default="2026-05-01", help="开始日期，格式 YYYY-MM-DD")
-    parser.add_argument("--end-date", default="2026-05-31", help="结束日期，格式 YYYY-MM-DD")
+    parser.add_argument("--start-date", help="开始日期，格式 YYYY-MM-DD；不传则按全量拉取")
+    parser.add_argument("--end-date", help="结束日期，格式 YYYY-MM-DD；不传则按全量拉取")
     parser.add_argument(
         "--input-mode",
         choices=["fee", "fetch", "both"],
@@ -775,6 +811,9 @@ def main() -> None:
     from browser_session import get_auth
 
     args = parse_args()
+    if bool(args.start_date) != bool(args.end_date):
+        print("❌ 日期区间必须同时提供开始和结束日期；若不指定日期，请两个参数都不要传。")
+        return
 
     try:
         # 根据 --auto-login 标志决定是否自动登录
@@ -846,6 +885,7 @@ def main() -> None:
         "query_period": {
             "start_date": args.start_date,
             "end_date": args.end_date,
+            "mode": "range" if has_date_range(args.start_date, args.end_date) else "all",
         },
         "bank_transactions": bank_result,
         "input_fee_invoices": input_fee_result,

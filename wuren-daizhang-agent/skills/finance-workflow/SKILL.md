@@ -300,6 +300,17 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.p
 
 ### 字段理解规则
 
+#### 日期范围规则
+
+- 如果用户**明确给了开始/结束日期区间**，则：
+  - 只按该区间拉取数据
+  - 只按该区间做匹配与确认单判断
+- 如果用户**没有明确给日期区间**，则：
+  - 默认按**全量数据**拉取
+  - 汇报时要明确写“本次为全量拉取，不是按期间筛选”
+- 不要在用户未给日期时，擅自套用固定月份或历史示例日期
+- 如果只给了开始日期或只给了结束日期，先判为 `待核实`，不要私自补另一端日期
+
 #### 银企直连明细查询
 
 - 必须优先读取这些筛选语义：
@@ -454,6 +465,11 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.p
       - 贷：`80448 / 应交税费_应交增值税` = `taxAmount`
     - 无税额时，才允许保留“一个借方费用 + 一个贷方银行”的两行分录
     - `create_exceptions`：未匹配银行流水按 `transNo` 去重后新增 `EXCEPTION(4)`
+  - 同日再次重试：
+    - `1001 / 支出发票确认单` 仍可通过 `submit` 正常创建
+    - `1004 / 应付账款确认单` 即使补 `companyId / merchantNo / accountSubjects / subjectJson`，当前 UAT 仍直接返回 `HTTP 500`
+    - `2003 / 应收账款确认单` 即使补 `companyId / merchantNo / accountSubjects / subjectJson`，当前 UAT 仍返回 `未确定门店，请核实请求参数`
+    - 因此当前版本对 `1004 / 2003` 只能稳定输出候选，不要误答成“已成功写入”
 
 ### 确认单填写与状态规则
 

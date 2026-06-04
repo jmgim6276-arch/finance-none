@@ -413,12 +413,24 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.p
     - `confirmStatus=1`
     - `voucherDiest`
     可成功新增确认单，系统创建了新记录
+  - 同日继续确认：
+    - 真实会计科目树可通过 `GET /api/erp/accountingSubject/queryAccountingSubjectTreeByMerchantNo?merchantNo=...`
+    - `merchantNo=C680513` 的当前 UAT 科目树里：
+      - `80552 = 银行存款_平安银行0099`
+      - `80578 = 管理费用_房租水电`
+      - `80448 = 应交税费_应交增值税`
+    - 当前树里没有单独名为“进项税额”的明细叶子；自动化含税分录先用 `80448`
   - 同日也已实测：对未匹配银行流水，调用
     - `confirmStatus=4`
     - 按 `transNo` 去重后提交
     可成功新增异常池确认单
   - 当前脚本策略：
-    - `create_matched`：已匹配成功的交易优先新增 `CONFIRMING(1)`，并在能推断科目时自动补 `accountSubjects`
+    - `create_matched`：已匹配成功的交易优先新增 `CONFIRMING(1)`；如能推断科目，会在创建链路中带上 `accountSubjects`，并在后续 `update` 再补齐一次
+    - 含税的支出发票确认单必须拆成：
+      - 借：费用科目 = `amountWithoutTax`
+      - 借：`80448 / 应交税费_应交增值税` = `taxAmount`
+      - 贷：银行存款明细科目 = `totalAmount`
+    - 无税额时，才允许保留“一个借方费用 + 一个贷方银行”的两行分录
     - `create_exceptions`：未匹配银行流水按 `transNo` 去重后新增 `EXCEPTION(4)`
 
 ### 确认单填写与状态规则
@@ -433,6 +445,11 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.p
   - `purpose`
   - `bankRemarks`
   - `orderNo`
+- 会计分录固定规则：
+  - 含税支出发票确认单按**两个借方 + 一个贷方**处理，不是两个贷方
+  - 当前阶段金额匹配仍以**价税合计**对银行流水做匹配
+  - 真正写分录时，再把价税合计拆成 `amountWithoutTax + taxAmount`
+  - 如果 UAT 科目树暂时没有“应交税费-应交增值税-进项税额”叶子，先使用 `80448 / 应交税费_应交增值税`
 - 借贷平衡是硬规则：
   - 必须同时有借方和贷方
   - 借方合计必须等于贷方合计

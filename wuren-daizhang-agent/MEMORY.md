@@ -96,7 +96,19 @@
   - 同日已实测：未匹配银行流水也可直接调用 `submit` 写入异常池
     - 样本流水 `0164612605090161260577` 已成功写入系统，新记录 `id=30`
     - 当前策略是按 `transNo` 去重后创建 `confirmStatus=4`
+  - 同日继续确认：
+    - 会计科目树接口：`GET /api/erp/accountingSubject/queryAccountingSubjectTreeByMerchantNo?merchantNo=...`
+    - `merchantNo=C680513` 的当前 UAT 科目树实测：
+      - `80552 = 银行存款_平安银行0099`
+      - `80578 = 管理费用_房租水电`
+      - `80448 = 应交税费_应交增值税`
+    - 当前树里没有单独“进项税额”叶子，所以含税支出单据先把税额落到 `80448`
+    - `detail` 接口里更稳定的是 `subjectJson`，不要只盯 `accountSubjects`
 - 确认单硬规则：
   - 机器人只应主动推进 `CONFIRMING(1)` 与 `EXCEPTION(4)`
   - `CONFIRMED(2)` 与 `POSTED(3)` 需要人工介入
   - 任意确认单都必须借贷平衡；借方合计不等于贷方合计时，一律进异常池
+  - 含税支出发票确认单是**两个借方 + 一个贷方**：
+    - 借：费用科目 = `amountWithoutTax`
+    - 借：`80448 / 应交税费_应交增值税` = `taxAmount`
+    - 贷：银行存款明细科目 = `totalAmount`

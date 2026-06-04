@@ -413,6 +413,13 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.p
     - `confirmStatus=1`
     - `voucherDiest`
     可成功新增确认单，系统创建了新记录
+  - 同日也已实测：对未匹配银行流水，调用
+    - `confirmStatus=4`
+    - 按 `transNo` 去重后提交
+    可成功新增异常池确认单
+  - 当前脚本策略：
+    - `create_matched`：已匹配成功的交易优先新增 `CONFIRMING(1)`，并在能推断科目时自动补 `accountSubjects`
+    - `create_exceptions`：未匹配银行流水按 `transNo` 去重后新增 `EXCEPTION(4)`
 
 ### 确认单填写与状态规则
 

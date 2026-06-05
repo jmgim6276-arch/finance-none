@@ -134,6 +134,21 @@
       - `queryOrderConfirmsByVerification`
     - 页面打包代码里没有把 `/api/bill/order-confirmation/submit` 暴露成 `confirmBill` 页内的可点击创建入口
     - 结论：`1004 / 2003` 的“建壳”步骤大概率来自别的业务页面或上游流程，不在当前确认单管理页里直接完成
+  - `2026-06-05` 再次用真实 UAT 实测 `/api/bill/order-confirmation/submit`：
+    - `1004 / 应付账款确认单`
+      - 选取了**系统内原本不存在同类型确认单**的进项发票 `26429165806000095555`
+      - 最小 payload 与补 `companyId + accountSubjects + subjectJson` 的 rich payload 都返回
+        - `HTTP 500`
+        - `{"status":500,"error":"Internal Server Error","path":"/ccs/bill/order-confirmation/submit"}`
+      - 提交前后 `queryOrderConfirmPage(confirmOrderType=1004, invoiceNumber=...)` 结果都为 `0`
+      - 结论：不是重复拦截，而是当前 UAT 直提 `1004` 仍不可用
+    - `2003 / 应收账款确认单`
+      - 选取了**系统内原本不存在同类型确认单**的销项发票 `25337000000561953765`
+      - 最小 payload 与补 `companyId + merchantNo + accountSubjects + subjectJson` 的 rich payload 都返回
+        - `code=500`
+        - `message=未确定门店，请核实请求参数`
+      - 提交前后 `queryOrderConfirmPage(confirmOrderType=2003, invoiceNumber=...)` 结果都为 `0`
+      - 结论：不是重复拦截，而是当前 UAT 直提 `2003` 仍不可用
 - 确认单硬规则：
   - 机器人只应主动推进 `CONFIRMING(1)` 与 `EXCEPTION(4)`
   - `CONFIRMED(2)` 与 `POSTED(3)` 需要人工介入

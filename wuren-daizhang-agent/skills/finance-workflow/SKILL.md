@@ -471,6 +471,10 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.p
     - `2003 / 应收账款确认单` 即使补 `companyId / merchantNo / accountSubjects / subjectJson`，当前 UAT 直接 `/submit` 仍会失败
     - 前端手工成功样本显示：`1004` 的保存路径是 `POST /api/bill/order-confirmation/update`，且依赖已有壳单字段，如 `id / expenseId / expensesNo / billTemplateId / merchantNo / merchantName`
     - 前端 `confirmBill` 页面打包代码里的 `orderConfirm` API 只暴露了 `query / detail / update / submitExpenses / queryOrderConfirmsByVerification`，没有页面内的 `/submit` 创建入口
+    - `2026-06-05` 再次用真实 UAT 重试：
+      - 对 **不存在同类型确认单** 的 `1004` 发票 `26429165806000095555`，最小 payload 与 rich payload 都返回 `HTTP 500 / Internal Server Error`
+      - 对 **不存在同类型确认单** 的 `2003` 发票 `25337000000561953765`，最小 payload 与 rich payload 都返回 `message=未确定门店，请核实请求参数`
+      - 两类单据提交前后再次查询，系统里都没有新增记录
     - 因此当前版本对 `1004 / 2003` 应优先理解为“更新已有壳单”；在识别出上游建壳接口前，只能稳定输出候选，不能误答成“已从零新建成功”
 
 ### 确认单填写与状态规则

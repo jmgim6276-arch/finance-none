@@ -449,7 +449,10 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.p
     可成功新增异常池确认单
   - 当前脚本策略：
     - `create_matched`：已匹配成功的交易优先新增 `CONFIRMING(1)`；如能推断科目，会在创建链路中带上 `accountSubjects`，并在后续 `update` 再补齐一次
-    - `create_payables`：未匹配付款回单的进项发票先产出 `1004 / 应付账款确认单` 候选；如果系统里已经存在对应壳单，可再走 `/update` 补齐
+    - `create_payables`：未匹配付款回单的进项发票优先尝试新增 `1004 / 应付账款确认单`
+      - 前提：能从发票购方名称推断出 `merchantNo / merchantName`
+      - 创建后要再走一次 `/update` 补 `accountSubjects / subjectJson`
+      - 如果无法推断 `merchantNo`，则跳过并明确说明原因
     - `create_receivables`：未匹配收款回单的销项发票先产出 `2003 / 应收账款确认单` 候选；如果系统里已经存在对应壳单，可再走 `/update` 补齐
     - 含税的支出发票确认单必须拆成：
       - 借：费用科目 = `amountWithoutTax`
@@ -467,15 +470,19 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.p
     - `create_exceptions`：未匹配银行流水按 `transNo` 去重后新增 `EXCEPTION(4)`
   - 同日再次重试：
     - `1001 / 支出发票确认单` 仍可通过 `submit` 正常创建
-    - `1004 / 应付账款确认单` 即使补 `companyId / merchantNo / accountSubjects / subjectJson`，当前 UAT 直接 `/submit` 仍会失败
-    - `2003 / 应收账款确认单` 即使补 `companyId / merchantNo / accountSubjects / subjectJson`，当前 UAT 直接 `/submit` 仍会失败
-    - 前端手工成功样本显示：`1004` 的保存路径是 `POST /api/bill/order-confirmation/update`，且依赖已有壳单字段，如 `id / expenseId / expensesNo / billTemplateId / merchantNo / merchantName`
+    - `1004 / 应付账款确认单`
+      - 早期极简 payload 仍可能触发 `HTTP 500`
+      - 但 `2026-06-05` 已再次实测：只要补齐 `merchantNo / merchantName / 发票税额字段 / 购销方字段`，可直接通过 `/submit` 新建
+      - 新建后再走 `/update`，可把应付账款分录补齐
+    - `2003 / 应收账款确认单`
+      - 即使补 `companyId / merchantNo / accountSubjects / subjectJson`，当前 UAT 直接 `/submit` 仍返回 `未确定门店，请核实请求参数`
     - 前端 `confirmBill` 页面打包代码里的 `orderConfirm` API 只暴露了 `query / detail / update / submitExpenses / queryOrderConfirmsByVerification`，没有页面内的 `/submit` 创建入口
     - `2026-06-05` 再次用真实 UAT 重试：
-      - 对 **不存在同类型确认单** 的 `1004` 发票 `26429165806000095555`，最小 payload 与 rich payload 都返回 `HTTP 500 / Internal Server Error`
-      - 对 **不存在同类型确认单** 的 `2003` 发票 `25337000000561953765`，最小 payload 与 rich payload 都返回 `message=未确定门店，请核实请求参数`
-      - 两类单据提交前后再次查询，系统里都没有新增记录
-    - 因此当前版本对 `1004 / 2003` 应优先理解为“更新已有壳单”；在识别出上游建壳接口前，只能稳定输出候选，不能误答成“已从零新建成功”
+      - `1004` 已成功新建样本：`id=31 / id=32 / id=33`
+      - `2003` 对两个不同门店样本都仍返回 `未确定门店，请核实请求参数`
+    - 因此当前版本应更新为：
+      - `1004`：可以自动新建，但前提是能推断门店上下文
+      - `2003`：仍只稳定输出候选，不要误答成“已成功写入”
 
 ### 确认单填写与状态规则
 

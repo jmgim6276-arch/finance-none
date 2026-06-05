@@ -62,6 +62,25 @@ DEFAULT_REVENUE_SUBJECT = {
     "subjectFullName": "主营业务收入_服务收入",
     "subjectCode": "500101",
 }
+KNOWN_MERCHANT_CONTEXT_BY_BUYER_NAME = {
+    "北京凯旋创智科技有限公司武汉分公司": {
+        "merchantNo": "C680513",
+        "merchantName": "公司B",
+        "payAccountId": 10125,
+        "payAccountNo": "15185480430099",
+        "payAccountName": "北京凯旋创智科技有限公司武汉分公司",
+    },
+    "北京凯旋创智科技有限公司": {
+        "merchantNo": "C651112",
+        "merchantName": "北京凯旋创智科技有限公司",
+    },
+    "北京凯旋创智科技有限公司郑州分公司": {
+        "merchantNo": "C649318",
+        "merchantName": "郑州分公司-API",
+        "payAccountNo": "CUST39448FAA69AA8018",
+        "payAccountName": "北京凯旋创智科技有限公司郑州分公司",
+    },
+}
 SUBJECT_TREE_CACHE: Dict[str, List[Dict[str, Any]]] = {}
 
 
@@ -170,6 +189,21 @@ def build_voucher_diest_from_invoice(invoice: Dict[str, Any]) -> Optional[str]:
         invoice.get("buyerName"),
         invoice.get("invoiceNumber"),
     )
+
+
+def infer_merchant_context_from_invoice(invoice: Dict[str, Any]) -> Dict[str, Any]:
+    buyer_name = first_text(invoice.get("buyerName"), invoice.get("invoicePurchaseName"))
+    if buyer_name and buyer_name in KNOWN_MERCHANT_CONTEXT_BY_BUYER_NAME:
+        return dict(KNOWN_MERCHANT_CONTEXT_BY_BUYER_NAME[buyer_name])
+
+    result: Dict[str, Any] = {}
+    merchant_no = first_text(invoice.get("merchantNo"))
+    merchant_name = first_text(invoice.get("merchantName"))
+    if merchant_no:
+        result["merchantNo"] = merchant_no
+    if merchant_name:
+        result["merchantName"] = merchant_name
+    return result
 
 
 def build_create_payload_from_pair(
@@ -287,11 +321,13 @@ def build_create_payload_from_unmatched_bank(item: Dict[str, Any], *, confirm_st
 def build_create_payload_from_invoice_candidate(candidate: Dict[str, Any], *, confirm_status: int) -> Dict[str, Any]:
     invoice = candidate.get("invoice") or {}
     confirm_order_type = int(candidate.get("confirmOrderType") or 1004)
+    merchant_context = infer_merchant_context_from_invoice(invoice)
     payload: Dict[str, Any] = {
         "confirmOrderType": confirm_order_type,
         "invoiceNumber": first_text(invoice.get("invoiceNumber")),
         "confirmStatus": int(confirm_status),
     }
+    payload.update(merchant_context)
     voucher_diest = build_voucher_diest_from_invoice(invoice)
     if voucher_diest:
         payload["voucherDiest"] = voucher_diest
@@ -301,6 +337,46 @@ def build_create_payload_from_invoice_candidate(candidate: Dict[str, Any], *, co
         payload["projectId"] = project_id
     if project_name:
         payload["projectName"] = project_name
+    payload["invoiceStatus"] = "EXISTINGINVOICE"
+    invoice_id = invoice.get("id")
+    if invoice_id not in (None, ""):
+        payload["invoiceId"] = invoice_id
+    invoice_date = first_text(invoice.get("bizDate"), invoice.get("invoiceMakeDate"))
+    if invoice_date:
+        payload["invoiceDate"] = invoice_date
+    amount_tax = (
+        invoice.get("invoiceTotalPrice")
+        if invoice.get("invoiceTotalPrice") not in (None, "")
+        else invoice.get("invoiceMakeTotalAmount")
+    )
+    if amount_tax not in (None, ""):
+        payload["amountTax"] = amount_tax
+    tax_amount = first_text(
+        invoice.get("invoiceTax"),
+        invoice.get("taxAmount"),
+        invoice.get("taxPrice"),
+    )
+    if tax_amount not in (None, ""):
+        payload["tax"] = float(tax_amount)
+    purchase_tax_number = first_text(invoice.get("buyerTaxNo"))
+    invoice_purchase_name = first_text(invoice.get("buyerName"))
+    invoice_sale_name = first_text(invoice.get("sellerName"))
+    sale_tax_number = first_text(invoice.get("sellerTaxNo"))
+    if purchase_tax_number:
+        payload["purchaseTaxNumber"] = purchase_tax_number
+    if invoice_purchase_name:
+        payload["invoicePurchaseName"] = invoice_purchase_name
+    if invoice_sale_name:
+        payload["invoiceSalseName"] = invoice_sale_name
+    if sale_tax_number:
+        payload["salseTaxNumber"] = sale_tax_number
+    invoice_url = first_text(invoice.get("invoicePdfUrl"), invoice.get("invoiceUrl"))
+    if invoice_url:
+        payload["invoiceUrl"] = invoice_url
+    for key in ("orderId", "invoiceApplyId", "orderNo", "billCode", "invoiceApplyType", "invoiceType"):
+        value = invoice.get(key)
+        if value not in (None, ""):
+            payload[key] = value
     reason = str(candidate.get("reason") or "").strip()
     if reason:
         payload["remark"] = reason
@@ -1234,37 +1310,23 @@ def main() -> None:
             result["message"] = "没有新增确认单；请查看 create_results 中的跳过或失败原因。"
     elif args.create_payables:
         payable_candidates = extract_accounts_payable_candidates(slip)
-        if not args.force_direct_submit:
-            result["action"] = "create_payables"
-            result["success"] = False
-            result["planned_create_count"] = len(payable_candidates)
-            result["created_count"] = 0
-            result["skipped_count"] = len(payable_candidates)
-            result["create_results"] = [
-                {
-                    "ok": False,
-                    "skipped": True,
-                    "confirmOrderType": 1004,
-                    "reason": (
-                        "当前 UAT 手工样本显示 1004 成功路径是更新已有壳单(/update)，"
-                        "不是直接 /submit 新建；在识别出上游建壳接口前，默认不再直提。"
-                    ),
-                    "invoiceNumber": ((candidate.get("invoice") or {}).get("invoiceNumber")),
-                }
-                for candidate in payable_candidates
-            ]
-            result["message"] = (
-                "已跳过 1004 直接提单。当前 UAT 需先识别上游建壳接口或已有确认单壳记录，再走 /update。"
-            )
-            with open(args.output, "w", encoding="utf-8") as handle:
-                json.dump(result, handle, indent=2, ensure_ascii=False)
-            print(f"\n📋 结果已保存：{args.output}")
-            print(f"⚠️  {result.get('message')}")
-            return
-
         creation_items = []
+        skipped_precheck: List[Dict[str, Any]] = []
         for candidate in payable_candidates:
             invoice = candidate.get("invoice") or {}
+            merchant_context = infer_merchant_context_from_invoice(invoice)
+            merchant_no = merchant_context.get("merchantNo") or invoice.get("merchantNo")
+            if not merchant_no and not args.force_direct_submit:
+                skipped_precheck.append(
+                    {
+                        "ok": False,
+                        "skipped": True,
+                        "confirmOrderType": 1004,
+                        "invoiceNumber": invoice.get("invoiceNumber"),
+                        "reason": "无法从发票购方名称推断 merchantNo，已跳过当前 1004 候选",
+                    }
+                )
+                continue
             subject_bundle = build_account_subjects(
                 base_url,
                 token,
@@ -1272,7 +1334,7 @@ def main() -> None:
                 confirm_order_type=int(candidate.get("confirmOrderType") or 1004),
                 bank_txn={},
                 invoice=invoice,
-                merchant_no=invoice.get("merchantNo"),
+                merchant_no=merchant_no,
             )
             creation_items.append(
                 {
@@ -1289,10 +1351,10 @@ def main() -> None:
 
         result["action"] = "create_payables"
         result["planned_create_count"] = len(creation_items)
-        result["create_results"] = []
+        result["create_results"] = list(skipped_precheck)
 
         success_count = 0
-        skipped_count = 0
+        skipped_count = len(skipped_precheck)
         for item in creation_items:
             candidate = item.get("candidate") or {}
             payload = item.get("payload") or {}

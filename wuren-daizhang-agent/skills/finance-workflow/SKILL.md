@@ -449,8 +449,8 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.p
     可成功新增异常池确认单
   - 当前脚本策略：
     - `create_matched`：已匹配成功的交易优先新增 `CONFIRMING(1)`；如能推断科目，会在创建链路中带上 `accountSubjects`，并在后续 `update` 再补齐一次
-    - `create_payables`：未匹配付款回单的进项发票可新增 `1004 / 应付账款确认单`
-    - `create_receivables`：未匹配收款回单的销项发票可新增 `2003 / 应收账款确认单`
+    - `create_payables`：未匹配付款回单的进项发票先产出 `1004 / 应付账款确认单` 候选；如果系统里已经存在对应壳单，可再走 `/update` 补齐
+    - `create_receivables`：未匹配收款回单的销项发票先产出 `2003 / 应收账款确认单` 候选；如果系统里已经存在对应壳单，可再走 `/update` 补齐
     - 含税的支出发票确认单必须拆成：
       - 借：费用科目 = `amountWithoutTax`
       - 借：`80448 / 应交税费_应交增值税` = `taxAmount`
@@ -467,9 +467,10 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.p
     - `create_exceptions`：未匹配银行流水按 `transNo` 去重后新增 `EXCEPTION(4)`
   - 同日再次重试：
     - `1001 / 支出发票确认单` 仍可通过 `submit` 正常创建
-    - `1004 / 应付账款确认单` 即使补 `companyId / merchantNo / accountSubjects / subjectJson`，当前 UAT 仍直接返回 `HTTP 500`
-    - `2003 / 应收账款确认单` 即使补 `companyId / merchantNo / accountSubjects / subjectJson`，当前 UAT 仍返回 `未确定门店，请核实请求参数`
-    - 因此当前版本对 `1004 / 2003` 只能稳定输出候选，不要误答成“已成功写入”
+    - `1004 / 应付账款确认单` 即使补 `companyId / merchantNo / accountSubjects / subjectJson`，当前 UAT 直接 `/submit` 仍会失败
+    - `2003 / 应收账款确认单` 即使补 `companyId / merchantNo / accountSubjects / subjectJson`，当前 UAT 直接 `/submit` 仍会失败
+    - 前端手工成功样本显示：`1004` 的保存路径是 `POST /api/bill/order-confirmation/update`，且依赖已有壳单字段，如 `id / expenseId / expensesNo / billTemplateId / merchantNo / merchantName`
+    - 因此当前版本对 `1004 / 2003` 应优先理解为“更新已有壳单”；在识别出上游建壳接口前，只能稳定输出候选，不能误答成“已从零新建成功”
 
 ### 确认单填写与状态规则
 

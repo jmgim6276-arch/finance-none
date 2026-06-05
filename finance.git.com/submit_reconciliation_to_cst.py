@@ -1051,6 +1051,11 @@ def main() -> None:
         help="按确认单 submit 接口，把 slip.details.accountsReceivableCandidates 里的候选新增为应收账款确认单",
     )
     parser.add_argument(
+        "--force-direct-submit",
+        action="store_true",
+        help="强制对 1004/2003 候选直接调用 /submit 做探针；默认关闭，避免重复触发当前 UAT 已知失败路径",
+    )
+    parser.add_argument(
         "--confirm-status",
         type=int,
         default=1,
@@ -1229,6 +1234,34 @@ def main() -> None:
             result["message"] = "没有新增确认单；请查看 create_results 中的跳过或失败原因。"
     elif args.create_payables:
         payable_candidates = extract_accounts_payable_candidates(slip)
+        if not args.force_direct_submit:
+            result["action"] = "create_payables"
+            result["success"] = False
+            result["planned_create_count"] = len(payable_candidates)
+            result["created_count"] = 0
+            result["skipped_count"] = len(payable_candidates)
+            result["create_results"] = [
+                {
+                    "ok": False,
+                    "skipped": True,
+                    "confirmOrderType": 1004,
+                    "reason": (
+                        "当前 UAT 手工样本显示 1004 成功路径是更新已有壳单(/update)，"
+                        "不是直接 /submit 新建；在识别出上游建壳接口前，默认不再直提。"
+                    ),
+                    "invoiceNumber": ((candidate.get("invoice") or {}).get("invoiceNumber")),
+                }
+                for candidate in payable_candidates
+            ]
+            result["message"] = (
+                "已跳过 1004 直接提单。当前 UAT 需先识别上游建壳接口或已有确认单壳记录，再走 /update。"
+            )
+            with open(args.output, "w", encoding="utf-8") as handle:
+                json.dump(result, handle, indent=2, ensure_ascii=False)
+            print(f"\n📋 结果已保存：{args.output}")
+            print(f"⚠️  {result.get('message')}")
+            return
+
         creation_items = []
         for candidate in payable_candidates:
             invoice = candidate.get("invoice") or {}
@@ -1338,6 +1371,34 @@ def main() -> None:
             result["message"] = "没有新增应付账款确认单；请查看 create_results 中的跳过或失败原因。"
     elif args.create_receivables:
         receivable_candidates = extract_accounts_receivable_candidates(slip)
+        if not args.force_direct_submit:
+            result["action"] = "create_receivables"
+            result["success"] = False
+            result["planned_create_count"] = len(receivable_candidates)
+            result["created_count"] = 0
+            result["skipped_count"] = len(receivable_candidates)
+            result["create_results"] = [
+                {
+                    "ok": False,
+                    "skipped": True,
+                    "confirmOrderType": 2003,
+                    "reason": (
+                        "当前 UAT 手工样本显示 2003 直接 /submit 会返回门店/请求体错误；"
+                        "在识别出上游建壳接口前，默认不再直提。"
+                    ),
+                    "invoiceNumber": ((candidate.get("invoice") or {}).get("invoiceNumber")),
+                }
+                for candidate in receivable_candidates
+            ]
+            result["message"] = (
+                "已跳过 2003 直接提单。当前 UAT 需先识别上游建壳接口或已有确认单壳记录，再走 /update。"
+            )
+            with open(args.output, "w", encoding="utf-8") as handle:
+                json.dump(result, handle, indent=2, ensure_ascii=False)
+            print(f"\n📋 结果已保存：{args.output}")
+            print(f"⚠️  {result.get('message')}")
+            return
+
         creation_items = [
             {
                 "candidate": candidate,

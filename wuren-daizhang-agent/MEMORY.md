@@ -121,6 +121,10 @@
     - `1004 / 应付账款确认单` 即使补 `companyId / merchantNo / accountSubjects / subjectJson`，`POST /api/bill/order-confirmation/submit` 仍直接返回 `HTTP 500`
     - `2003 / 应收账款确认单` 即使补 `companyId / merchantNo / accountSubjects / subjectJson`，接口仍返回 `message=未确定门店，请核实请求参数`
     - 结论：`1004 / 2003` 的自动创建条件在当前 UAT 还缺隐藏参数或需要走别的上游入口，不能假装已落库成功
+  - 已通过前端手工样本进一步确认：
+    - 现成 `1004` 单据的成功保存请求是 `POST /api/bill/order-confirmation/update`
+    - 成功样本依赖已有壳单字段：`id / expenseId / expensesNo / billTemplateId / merchantNo / merchantName`
+    - 因此 `1004 / 2003` 当前应优先理解为“更新已有壳单”，而不是直接调用 `/submit` 从零新建
 - 确认单硬规则：
   - 机器人只应主动推进 `CONFIRMING(1)` 与 `EXCEPTION(4)`
   - `CONFIRMED(2)` 与 `POSTED(3)` 需要人工介入

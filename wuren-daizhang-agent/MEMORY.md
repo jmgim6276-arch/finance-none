@@ -125,6 +125,15 @@
     - 现成 `1004` 单据的成功保存请求是 `POST /api/bill/order-confirmation/update`
     - 成功样本依赖已有壳单字段：`id / expenseId / expensesNo / billTemplateId / merchantNo / merchantName`
     - 因此 `1004 / 2003` 当前应优先理解为“更新已有壳单”，而不是直接调用 `/submit` 从零新建
+  - 已进一步通过前端静态代码确认：
+    - `confirmBill` 页面对应的前端 `orderConfirm` API 只暴露了
+      - `queryOrderConfirmPage`
+      - `detail`
+      - `update`
+      - `submitExpenses`
+      - `queryOrderConfirmsByVerification`
+    - 页面打包代码里没有把 `/api/bill/order-confirmation/submit` 暴露成 `confirmBill` 页内的可点击创建入口
+    - 结论：`1004 / 2003` 的“建壳”步骤大概率来自别的业务页面或上游流程，不在当前确认单管理页里直接完成
 - 确认单硬规则：
   - 机器人只应主动推进 `CONFIRMING(1)` 与 `EXCEPTION(4)`
   - `CONFIRMED(2)` 与 `POSTED(3)` 需要人工介入

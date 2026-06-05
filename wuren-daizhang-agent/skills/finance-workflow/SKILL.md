@@ -476,6 +476,8 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.p
       - 新建后再走 `/update`，可把应付账款分录补齐
     - `2003 / 应收账款确认单`
       - 即使补 `companyId / merchantNo / accountSubjects / subjectJson`，当前 UAT 直接 `/submit` 仍返回 `未确定门店，请核实请求参数`
+      - 已拿到前端手工成功保存的 `2003 /update` 样本，说明**已有壳单时可补录**；样本里包含 `expensesNo / expenseId / billTemplateId / transNo / transTime / transAmount / projectId / accountSubjects`
+      - 因此 `2003` 当前不是“完全不能操作”，而是“不能从零直提 `/submit`，但能更新已有壳单”
     - 前端 `confirmBill` 页面打包代码里的 `orderConfirm` API 只暴露了 `query / detail / update / submitExpenses / queryOrderConfirmsByVerification`，没有页面内的 `/submit` 创建入口
     - `2026-06-05` 再次用真实 UAT 重试：
       - `1004` 已成功新建样本：`id=31 / id=32 / id=33`

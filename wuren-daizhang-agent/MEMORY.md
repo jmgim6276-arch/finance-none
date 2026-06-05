@@ -157,6 +157,18 @@
       - 更换 `merchantNo=C651112` 的另一张销项发票后，仍返回同样错误
       - 提交前后 `queryOrderConfirmPage(confirmOrderType=2003, invoiceNumber=...)` 结果都为 `0`
       - 结论：不是重复拦截，而是当前 UAT 直提 `2003` 仍不可用
+      - 但已拿到一条前端手工成功保存的 `2003` 更新样本：
+        - 路径：`POST /api/bill/order-confirmation/update`
+        - 记录：`id=20`
+        - 壳单字段已存在：`expensesNo=C202604272355260797`、`expenseId=384469`、`billTemplateId=7965`
+        - 该样本还带有：
+          - `merchantNo=C649318`
+          - `transNo / transTime / transAmount / businessType / abstracts / ereceiptUrl`
+          - `invoiceNumber / amountTax / tax / invoiceDate`
+          - `toAccountNo / toAccountName / payAccountNo / payAccountName`
+          - `projectId / projectName`
+          - `subjectId / debitSubjectId / accountSubjects / voucherDiest`
+        - 这进一步证明：`2003` 至少在当前 UAT 里，**更新已有壳单**是可行的；缺的仍然是“壳单从哪一步建出来”
 - 确认单硬规则：
   - 机器人只应主动推进 `CONFIRMING(1)` 与 `EXCEPTION(4)`
   - `CONFIRMED(2)` 与 `POSTED(3)` 需要人工介入

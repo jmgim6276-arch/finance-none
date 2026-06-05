@@ -383,6 +383,71 @@ def build_create_payload_from_invoice_candidate(candidate: Dict[str, Any], *, co
     return payload
 
 
+def build_create_payload_from_receivable_candidate(candidate: Dict[str, Any], *, confirm_status: int) -> Dict[str, Any]:
+    payload = build_create_payload_from_invoice_candidate(candidate, confirm_status=confirm_status)
+    invoice = candidate.get("invoice") or {}
+    bank_txn = candidate.get("bank_txn") or candidate.get("bankTxn") or {}
+
+    trans_no = first_text(candidate.get("transNo"), bank_txn.get("orderNo"))
+    detail_no = first_text(candidate.get("detailNo"), bank_txn.get("detailNo"))
+    trans_time = first_text(candidate.get("transTime"), bank_txn.get("transTime"))
+    trans_amount = candidate.get("transAmount")
+    if trans_amount in (None, ""):
+        trans_amount = bank_txn.get("amount")
+    business_type = first_text(candidate.get("businessType"), bank_txn.get("businessType"))
+    abstracts = first_text(candidate.get("abstracts"), bank_txn.get("abstracts"))
+    ereceipt_url = first_text(candidate.get("ereceiptUrl"), bank_txn.get("ereceiptUrl"))
+    merchant_no = first_text(payload.get("merchantNo"), candidate.get("merchantNo"), bank_txn.get("merchantNo"))
+    merchant_name = first_text(payload.get("merchantName"), candidate.get("merchantName"), bank_txn.get("merchantName"))
+    to_account_no = first_text(candidate.get("toAccountNo"), bank_txn.get("outBankAccountNo"))
+    to_account_name = first_text(candidate.get("toAccountName"), bank_txn.get("outBankAccountName"))
+    pay_account_no = first_text(candidate.get("payAccountNo"), bank_txn.get("paymentNo"), bank_txn.get("bankAccountNo"))
+    pay_account_name = first_text(candidate.get("payAccountName"), bank_txn.get("bankAccountName"))
+    contract_id = candidate.get("contractId") or invoice.get("contractId")
+    contract_no = first_text(candidate.get("contractNo"), invoice.get("contractNo"))
+    contract_name = first_text(candidate.get("contractName"), invoice.get("contractName"))
+    project_id = candidate.get("projectId") or invoice.get("projectId")
+    project_name = first_text(candidate.get("projectName"), invoice.get("projectName"))
+
+    if trans_no:
+        payload["transNo"] = trans_no
+    if detail_no:
+        payload["detailNo"] = detail_no
+    if trans_time:
+        payload["transTime"] = trans_time
+    if trans_amount not in (None, ""):
+        payload["transAmount"] = trans_amount
+    if business_type:
+        payload["businessType"] = business_type
+    if abstracts:
+        payload["abstracts"] = abstracts
+    if ereceipt_url:
+        payload["ereceiptUrl"] = ereceipt_url
+    if merchant_no:
+        payload["merchantNo"] = merchant_no
+    if merchant_name:
+        payload["merchantName"] = merchant_name
+    if to_account_no:
+        payload["toAccountNo"] = to_account_no
+    if to_account_name:
+        payload["toAccountName"] = to_account_name
+    if pay_account_no:
+        payload["payAccountNo"] = pay_account_no
+    if pay_account_name:
+        payload["payAccountName"] = pay_account_name
+    if contract_id not in (None, ""):
+        payload["contractId"] = contract_id
+    if contract_no:
+        payload["contractNo"] = contract_no
+    if contract_name:
+        payload["contractName"] = contract_name
+    if project_id not in (None, ""):
+        payload["projectId"] = project_id
+    if project_name:
+        payload["projectName"] = project_name
+    return payload
+
+
 def exception_priority(item: Dict[str, Any]) -> tuple:
     bank_txn = item.get("bank_txn") or {}
     fee_like = is_fee_like_bank_txn(bank_txn)
@@ -1433,53 +1498,51 @@ def main() -> None:
             result["message"] = "没有新增应付账款确认单；请查看 create_results 中的跳过或失败原因。"
     elif args.create_receivables:
         receivable_candidates = extract_accounts_receivable_candidates(slip)
-        if not args.force_direct_submit:
-            result["action"] = "create_receivables"
-            result["success"] = False
-            result["planned_create_count"] = len(receivable_candidates)
-            result["created_count"] = 0
-            result["skipped_count"] = len(receivable_candidates)
-            result["create_results"] = [
-                {
-                    "ok": False,
-                    "skipped": True,
-                    "confirmOrderType": 2003,
-                    "reason": (
-                        "当前 UAT 手工样本显示 2003 直接 /submit 会返回门店/请求体错误；"
-                        "在识别出上游建壳接口前，默认不再直提。"
-                    ),
-                    "invoiceNumber": ((candidate.get("invoice") or {}).get("invoiceNumber")),
-                }
-                for candidate in receivable_candidates
-            ]
-            result["message"] = (
-                "已跳过 2003 直接提单。当前 UAT 需先识别上游建壳接口或已有确认单壳记录，再走 /update。"
+        creation_items = []
+        skipped_precheck: List[Dict[str, Any]] = []
+        for candidate in receivable_candidates:
+            payload = build_create_payload_from_receivable_candidate(
+                candidate,
+                confirm_status=args.confirm_status,
             )
-            with open(args.output, "w", encoding="utf-8") as handle:
-                json.dump(result, handle, indent=2, ensure_ascii=False)
-            print(f"\n📋 结果已保存：{args.output}")
-            print(f"⚠️  {result.get('message')}")
-            return
-
-        creation_items = [
-            {
-                "candidate": candidate,
-                "payload": build_create_payload_from_invoice_candidate(
-                    candidate,
-                    confirm_status=args.confirm_status,
-                ),
-            }
-            for candidate in receivable_candidates
-        ]
+            if not payload.get("merchantNo") and not args.force_direct_submit:
+                skipped_precheck.append(
+                    {
+                        "ok": False,
+                        "skipped": True,
+                        "confirmOrderType": 2003,
+                        "invoiceNumber": ((candidate.get("invoice") or {}).get("invoiceNumber")),
+                        "reason": "缺少 merchantNo，当前 2003 候选无法直提",
+                    }
+                )
+                continue
+            if not payload.get("transNo") and not args.force_direct_submit:
+                skipped_precheck.append(
+                    {
+                        "ok": False,
+                        "skipped": True,
+                        "confirmOrderType": 2003,
+                        "invoiceNumber": ((candidate.get("invoice") or {}).get("invoiceNumber")),
+                        "reason": "缺少真实 transNo，当前 2003 候选只能保留为候选或更新已有壳单",
+                        "payload": payload,
+                    }
+                )
+                continue
+            creation_items.append(
+                {
+                    "candidate": candidate,
+                    "payload": payload,
+                }
+            )
         if args.max_create > 0:
             creation_items = creation_items[: args.max_create]
 
         result["action"] = "create_receivables"
         result["planned_create_count"] = len(creation_items)
-        result["create_results"] = []
+        result["create_results"] = list(skipped_precheck)
 
         success_count = 0
-        skipped_count = 0
+        skipped_count = len(skipped_precheck)
         for item in creation_items:
             candidate = item.get("candidate") or {}
             payload = item.get("payload") or {}

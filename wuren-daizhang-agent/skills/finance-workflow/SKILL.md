@@ -453,7 +453,9 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.p
       - 前提：能从发票购方名称推断出 `merchantNo / merchantName`
       - 创建后要再走一次 `/update` 补 `accountSubjects / subjectJson`
       - 如果无法推断 `merchantNo`，则跳过并明确说明原因
-    - `create_receivables`：未匹配收款回单的销项发票先产出 `2003 / 应收账款确认单` 候选；如果系统里已经存在对应壳单，可再走 `/update` 补齐
+    - `create_receivables`：未匹配收款回单的销项发票
+      - 如果候选里带有真实交易上下文，如 `transNo / transTime / transAmount / businessType / payAccountNo / toAccountNo`，则允许尝试直提 `2003`
+      - 如果只有发票信息、没有真实交易上下文，则先保留为候选；已有壳单时可再走 `/update` 补齐
     - 含税的支出发票确认单必须拆成：
       - 借：费用科目 = `amountWithoutTax`
       - 借：`80448 / 应交税费_应交增值税` = `taxAmount`
@@ -475,16 +477,19 @@ CST_BASE_URL="https://cstuat.uf-tree.com" python3 submit_reconciliation_to_cst.p
       - 但 `2026-06-05` 已再次实测：只要补齐 `merchantNo / merchantName / 发票税额字段 / 购销方字段`，可直接通过 `/submit` 新建
       - 新建后再走 `/update`，可把应付账款分录补齐
     - `2003 / 应收账款确认单`
-      - 即使补 `companyId / merchantNo / accountSubjects / subjectJson`，当前 UAT 直接 `/submit` 仍返回 `未确定门店，请核实请求参数`
-      - 已拿到前端手工成功保存的 `2003 /update` 样本，说明**已有壳单时可补录**；样本里包含 `expensesNo / expenseId / billTemplateId / transNo / transTime / transAmount / projectId / accountSubjects`
-      - 因此 `2003` 当前不是“完全不能操作”，而是“不能从零直提 `/submit`，但能更新已有壳单”
+      - 如果只传发票字段与门店字段，当前 UAT 直接 `/submit` 仍可能返回 `未确定门店，请核实请求参数`
+      - 但 `2026-06-05` 已再次实测：带上真实交易上下文后，可直接通过 `/submit` 新建 `2003`，成功样本为 `id=34`
+      - 如果沿用同样的 payload 形状，但 `transNo` 不对应真实交易，接口会返回 `确认单关联的交易记录不存在`
+      - 已拿到前端手工成功保存的 `2003 /update` 样本，说明**已有壳单时也可补录**；样本里包含 `expensesNo / expenseId / billTemplateId / transNo / transTime / transAmount / projectId / accountSubjects`
+      - 因此 `2003` 当前不是“完全不能操作”，而是“必须带真实交易上下文才能从零直提；否则只能保留候选或更新已有壳单”
     - 前端 `confirmBill` 页面打包代码里的 `orderConfirm` API 只暴露了 `query / detail / update / submitExpenses / queryOrderConfirmsByVerification`，没有页面内的 `/submit` 创建入口
     - `2026-06-05` 再次用真实 UAT 重试：
       - `1004` 已成功新建样本：`id=31 / id=32 / id=33`
-      - `2003` 对两个不同门店样本都仍返回 `未确定门店，请核实请求参数`
+      - `2003` 早期对两个不同门店样本都返回过 `未确定门店，请核实请求参数`
+      - 但在补齐 `transNo / transTime / transAmount / businessType / account fields / contract fields` 后，已成功新增 `id=34`
     - 因此当前版本应更新为：
       - `1004`：可以自动新建，但前提是能推断门店上下文
-      - `2003`：仍只稳定输出候选，不要误答成“已成功写入”
+      - `2003`：可以自动新建，但前提是候选中带有真实交易上下文；否则仍只输出候选
 
 ### 确认单填写与状态规则
 

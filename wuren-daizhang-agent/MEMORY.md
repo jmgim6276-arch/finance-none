@@ -150,13 +150,26 @@
         - 能从 `buyerName / invoicePurchaseName` 推断 `merchantNo` 时，允许直提 `1004`
         - 若无法推断 `merchantNo`，则跳过并明确说明原因
     - `2003 / 应收账款确认单`
-      - 选取了**系统内原本不存在同类型确认单**的销项发票 `25337000000561953765`
-      - 最小 payload 与补 `companyId + merchantNo + accountSubjects + subjectJson` 的 rich payload 都返回
-        - `code=500`
+      - 早期只传“发票 + 门店 + 分录”的 payload 时，确实会报
         - `message=未确定门店，请核实请求参数`
-      - 更换 `merchantNo=C651112` 的另一张销项发票后，仍返回同样错误
-      - 提交前后 `queryOrderConfirmPage(confirmOrderType=2003, invoiceNumber=...)` 结果都为 `0`
-      - 结论：不是重复拦截，而是当前 UAT 直提 `2003` 仍不可用
+      - 但 `2026-06-05` 基于 `id=22` 的前端更新样本，改用**完整交易上下文**后再次直提 `/submit`，已成功新建：
+        - 新记录 `id=34`
+        - 发票号 `24122000000047885902`
+        - `confirmOrderType=2003`
+        - `confirmStatus=1`
+      - 这次成功 payload 的关键字段包括：
+        - `merchantNo / merchantName`
+        - `transNo / transTime / transAmount / businessType / abstracts`
+        - `invoiceNumber / amountTax / tax / invoiceDate`
+        - `toAccountNo / toAccountName / payAccountNo / payAccountName`
+        - `contractId / contractNo / contractName`
+        - `accountSubjects / voucherDiest`
+      - 继续验证时，若沿用同样 shape 但换成一个**伪造的 transNo**，接口会返回：
+        - `message=确认单关联的交易记录不存在`
+      - 结论：
+        - `2003` 不是完全不能直提
+        - 但必须带**真实存在的交易记录上下文**；只有发票信息还不够
+        - 如果候选里缺 `transNo`，当前脚本应保留为候选或更新已有壳单，而不是盲目直提
       - 但已拿到一条前端手工成功保存的 `2003` 更新样本：
         - 路径：`POST /api/bill/order-confirmation/update`
         - 记录：`id=20`
